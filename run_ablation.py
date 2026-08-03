@@ -24,7 +24,7 @@ from elicit_task import elicit
 MODEL = "openai/gpt-4o-mini"
 
 # Samples per config. Smoke-test size; raise to 100-200 once it runs cleanly.
-LIMIT = 30
+LIMIT = 200
 
 # All four combinations of (cot, critique). Add keys here as you add components.
 CONFIGS = [

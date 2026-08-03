@@ -50,7 +50,7 @@ def build_solver(cot: bool, critique: bool):
 def elicit(cot: bool = False, critique: bool = False):
     return Task(
         dataset=hf_dataset(
-            "gsm8k",                 # if this 404s, try "openai/gsm8k"
+            "openai/gsm8k",
             name="main",
             split="test",
             sample_fields=record_to_sample,
