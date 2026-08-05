@@ -23,7 +23,12 @@ from elicit_task import elicit
 #   "together/Qwen/Qwen2.5-7B-Instruct-Turbo"   (CONFIRM the current id!)
 MODEL = "openai/gpt-4o-mini"
 
-# Samples per config. Smoke-test size; raise to 100-200 once it runs cleanly.
+# Which registered adapter to run (see ADAPTERS in elicit_task.py):
+# "gsm8k" | "math" | "gpqa"
+SUITE = "gpqa"
+
+# Samples per config. 200 is the real-sweep size; drop back to ~20-30 for a
+# quick smoke test after changing prompts/scorers.
 LIMIT = 200
 
 # All four combinations of (cot, critique). Add keys here as you add components.
@@ -46,11 +51,11 @@ def get_accuracy(log):
 
 
 def main():
-    print(f"model={MODEL}  limit={LIMIT}\n")
+    print(f"model={MODEL}  suite={SUITE}  limit={LIMIT}\n")
     rows = []
     for cfg in CONFIGS:
         log = inspect_eval(
-            elicit(**cfg),
+            elicit(suite=SUITE, **cfg),
             model=MODEL,
             limit=LIMIT,
             log_dir="./logs",

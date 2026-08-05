@@ -32,8 +32,9 @@ def sample_outcomes(log_path: str) -> dict[str, bool]:
     log = read_eval_log(log_path)
     outcomes = {}
     for sample in log.samples:
-        # "match" scorer records C (correct) / I (incorrect) as the value
-        score = sample.scores["match"]
+        # scorer key varies by suite: "match" (gsm8k/math), "letter_match" (gpqa)
+        scorer_key = next(iter(sample.scores))
+        score = sample.scores[scorer_key]
         value = score.value
         correct = value in ("C", 1, 1.0, True)
         outcomes[str(sample.id)] = correct

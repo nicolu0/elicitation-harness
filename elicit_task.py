@@ -283,6 +283,12 @@ def code_execution_match():
 
 GPQA_LETTERS = "ABCD"
 
+GPQA_SYSTEM_BASE = (
+    "Answer the multiple-choice question directly. Do not explain your "
+    "reasoning. On its own line write your answer as exactly: "
+    "ANSWER: X (where X is the letter of the correct choice)."
+)
+
 GPQA_SYSTEM = (
     "Answer the multiple-choice question. Reason through it, then on its "
     "own final line write your answer as exactly: ANSWER: X (where X is "
@@ -354,7 +360,7 @@ ADAPTERS: dict[str, TaskAdapter] = {
         "inspect_ai.scorer", fromlist=["match"]
     ).match(location="end", numeric=True)),
     "math": TaskAdapter("math", MATH_SYSTEM, _load_math, boxed_match),
-    "gpqa": TaskAdapter("gpqa", GPQA_SYSTEM, _load_gpqa, letter_match),
+    "gpqa": TaskAdapter("gpqa", GPQA_SYSTEM_BASE, _load_gpqa, letter_match),
     # "humaneval": TaskAdapter("humaneval", HUMANEVAL_SYSTEM, _load_humaneval,
     #                           code_execution_match),  # needs sandbox first
 }
