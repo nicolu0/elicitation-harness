@@ -292,6 +292,122 @@ to move the needle), don't spend the API budget on a full pooled MATH
 sweep until the suite's headroom problem is resolved — see the open item
 below.
 
+## Phase 3 revisit — MATH headroom: algebra's ceiling, subject comparison, switch to intermediate_algebra
+
+The open item from the previous entry ("fix MATH headroom") turned into a
+much bigger investigation than expected — worth its own entry.
+
+**Algebra's headroom was never actually validated past n=20.** Ran a
+fresh bare-config batch at n=1000 (the algebra test split has 1187 total,
+so this isn't near the dataset's own cap the way GPQA is). Result:
+**accuracy 0.909** — right next to GSM8K's rejected 0.915. The n=20 pilot
+number (0.700) that justified adopting MATH in the first place was badly
+misleading; small-n pilots are not a reliable basis for suite selection,
+full stop.
+
+**Used the fresh n=1000 data to find more scorer bugs, this time on data
+the earlier fix had never seen.** Pulled all 91 unique incorrect verdicts,
+confirmed the earlier fix introduced zero regressions (0 of the 91 flip
+under the already-fixed matcher — consistent, not a fix-application bug),
+then manually read all 91 by hand. Found **15 more confirmed false
+negatives**, all fixed in `elicit_task.py`:
+- `\text{...}` unit/label suffix never stripped (7 cases — `118` vs
+  `118\text{ dollars}`, `85` vs `85\text{ feet}`, etc). Added
+  `_strip_text_wrapper()`: unwraps `\text{...}` when it's the *entire*
+  answer (keeps contents, e.g. `\text{Evelyn}` → `Evelyn`), strips it as a
+  discardable label when it's a suffix on a numeric answer (also strips a
+  trailing unit-exponent like the `^2` in `440\text{ cm}^2`, or a bare
+  `^2` is left behind corrupting the number).
+- **Pre-existing bug, not caught by the original fix**: the `\dfrac`/
+  `\tfrac` → `\frac` regex was `\\d?frac` — only ever made the "d"
+  optional, so despite the docstring's own claim, `\tfrac` was silently
+  never converted. Fixed to `\\[dt]?frac`.
+- Comma thousands-separators in dollar figures (`115000` vs `\$115,000`,
+  3 cases) — collapsed only when the whole cleaned answer fullmatches a
+  grouped-number pattern, specifically to avoid corrupting a genuine
+  multi-value list like `4,6,14,15`.
+- `+\infty` vs `\infty` in interval notation (2 cases) — now normalized.
+- `\sqrt` followed by a space before its digit (`\sqrt 2` vs `\sqrt{2}`,
+  1 case) — the earlier brace-fix regex required immediate adjacency.
+- Nested-brace `\frac` arg (`\frac{\sqrt6}3` vs `\frac{\sqrt{6}}{3}`,
+  1 case) — the old regex-based brace-fixer silently failed to match
+  (and therefore skipped fixing the brace-less *sibling* arg) whenever
+  either arg had nesting in it. Rewrote `_brace_frac_sqrt_args()` from a
+  single regex into an explicit balanced-brace scanner
+  (`_consume_balanced` / `_consume_frac_arg`), which handles arbitrary
+  nesting correctly instead of patching one more special case.
+
+Verified both directions again: all 15 flip to correct, the other 76 of
+91 incorrect cases read by hand as genuinely wrong (including one
+ambiguous-looking polynomial factorization, `(-4x²+2x+1)(4x²-1)` vs
+`(-4x²+x+1)(4x²+x+1)`, confirmed NOT equal via `sympy.expand`). Regression
+check across all 522 previously-correct verdicts (417 fresh + 105 from
+the earlier 5-log check): **zero regressions.**
+
+**Subject comparison, because algebra's ceiling meant a different subject
+was needed anyway.** Hendrycks MATH has 7 subjects; piloted all of them
+bare-config, gpt-4o-mini, n=40 each (n=500 for the two best):
+
+| subject | n=40 | n=500 | notes |
+|---|---|---|---|
+| algebra | — | 0.909 (n=1000) | ceiling, rejected |
+| number_theory | 0.875 | — | ceiling-adjacent, rejected |
+| counting_and_probability | 0.575 | — | clean at n=40, not pursued further |
+| **intermediate_algebra** | 0.600 | **0.552** | clean both times |
+| precalculus | 0.450 raw / ~0.525 adjusted | — | 3 new bugs: degree-symbol suffix, 2× matrix (`\begin{pmatrix}`) notation — matrices are a structural 20% of the subject (8/40), not a rare tail case, so real matrix-comparison support would be needed to trust it |
+| **geometry** | 0.425 | **0.555** | looked like the best headroom at n=40 — mostly small-sample noise, converges to a statistical tie with intermediate_algebra at n=500 |
+
+**geometry vs intermediate_algebra at n=500 — tied on the headline number,
+but not on scorer risk.** Triaged both n=500 runs: flagged every incorrect
+pair with string-similarity > 0.5 as a false-negative candidate (56 for
+intermediate_algebra, 57 for geometry) and read all 113 by hand.
+intermediate_algebra: **zero** false negatives — every flagged pair,
+including tricky-looking ones (`[2,∞)` vs `(2,∞)`, different bracket =
+genuinely different set; `326680` vs `327680`, a real near-miss, not a
+formatting issue) turned out to be a genuinely different answer.
+geometry: **5 false negatives**, three of them the same root cause —
+**`\pi` has no symbolic handling anywhere in `_sympy_equivalent`**
+(`\frac{9}{2}\pi` vs `\frac{9\pi}{2}`, and `72\sqrt3\pi` vs `72\pi\sqrt3`,
+same value, different bracketing/ordering that only a real `\pi → pi`
+sympy mapping would resolve) — plus one percent-sign case (`33` vs
+`33\%`, the second time this exact pattern has shown up, after also
+appearing once in the algebra n=1000 data) and one mixed-number case
+(`\frac{25}{13}` vs `1\frac{12}{13}`, i.e. 1 + 12/13 = 25/13, not
+currently parsed at all). Adjusted geometry accuracy ≈0.566 — still
+statistically tied with intermediate_algebra's 0.552.
+
+**Decision: `MATH_SUBJECT = "intermediate_algebra"`.** Same headroom as
+geometry once both are properly measured, zero outstanding scorer gap
+(vs. geometry's real, recurring π-handling gap), and a larger total pool
+(903 vs geometry's hard-capped 479) if more samples are ever needed.
+Percent-sign and mixed-number handling are left unfixed for now — both
+are real but lower-frequency patterns (2 confirmed instances total across
+two different subjects); revisit if they keep recurring once the full
+suite is in regular use.
+
+**False-positive check on intermediate_algebra (the other open Phase 2
+requirement).** Rather than a blind random sample, took the highest-risk
+subset instead: every "correct"-marked case in the n=500 run where the
+raw model-answer and target strings actually differed (i.e. the
+equivalence logic had to do real work to call them equal) — 54 of 276
+correct verdicts. Read all 54 by hand. **Zero false positives** — every
+match is genuinely correct (spacing normalization, brace-less `\frac`
+fixes, `\tfrac`, `\text{}` unwrap, `+\infty`, and one legitimate
+sympy-verified term-reordering, `-5-3\sqrt5` vs `-3\sqrt5-5`, all doing
+exactly what they're supposed to and nothing more).
+
+This targeted approach is narrower than a true random sample in one way
+(it can't catch a false positive that happens to have an identical raw
+string to its target, though that category is close to definitionally
+safe) but is a strictly harder test of the equivalence *logic* than a
+random sample would be, since it concentrates entirely on the cases where
+that logic actually did something. Combined with the exhaustive
+false-negative reviews above, this is the most scrutinized any suite's
+scorer has been in this project so far — intermediate_algebra is in
+better shape at adoption time than GPQA or algebra ever were.
+
+---
+
 ## Open item / next entry to add
 
 - [x] Record pooled McNemar p-value: bare vs cot — p=0.0401, significant
@@ -299,12 +415,25 @@ below.
       significant
 - [x] Write one paragraph interpreting both in plain language — done
       above
-- [ ] Fix MATH headroom (swap `MATH_SUBJECT` to a harder subject, and/or
-      filter by the already-captured `level` metadata) before running
-      the 5-seed pooled MATH sweep
-- [ ] Run the ≥30-random-transcript spot check (`spot_check.py`, just
-      added, not yet run against any log) for both GPQA and MATH,
-      counting false positives AND false negatives — the other open
-      Phase 2 requirement, separate from the MATH scorer's own
-      exhaustive-incorrect-case review above
+- [x] Fix MATH headroom — switched to `intermediate_algebra` (0.552 at
+      n=500), documented above
+- [x] Spot-check intermediate_algebra for both false negatives (113
+      candidates read, 0 found) and false positives (54 read, 0 found) —
+      not the literal random-sample protocol `spot_check.py` was built
+      for, but a strictly more targeted version of the same check
+- [ ] GPQA still has no false-positive check at all (only the
+      system-prompt bug and the CoT-leak fix have been examined) — run
+      `spot_check.py` against a GPQA log before treating GPQA's numbers
+      as equally scrutinized
+- [ ] Run the full 4-config × 5-seed ablation on intermediate_algebra
+      (same protocol as the GPQA one already in
+      `results/ablation_summary.json`), then the pooled McNemar tests,
+      then check whether the "critique adds nothing on top of cot"
+      finding replicates on a second, structurally different suite
+- [ ] Held-out/private contamination slice — still not done for either
+      suite
+- [ ] Power/sample-size justification and compute/dollar feasibility
+      estimate for the eventual 64-config sweep — still not done, though
+      real per-sample cost data now exists (n=500 intermediate_algebra
+      run: 611,833 tokens, 4m42s, gpt-4o-mini pricing) to base it on
 - [ ] Then: begin Phase 5 (tool use, Docker sandbox)

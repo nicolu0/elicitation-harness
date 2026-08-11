@@ -93,7 +93,17 @@ GSM8K_SYSTEM = (
 
 # ---- Adapter: boxed-answer math (Hendrycks MATH-style) --------------------
 
-MATH_SUBJECT = "algebra"  # swap for a harder subject if this is near-ceiling
+# "algebra" was the original choice but bare gpt-4o-mini scores 0.909 on it
+# at n=1000 -- a ceiling problem, same failure mode that rejected GSM8K.
+# Piloted all 7 Hendrycks MATH subjects (n=40, then n=500 on the top two):
+# intermediate_algebra and geometry both land at ~0.55 bare accuracy at
+# n=500 (statistically tied), but geometry's incorrect cases showed a real,
+# recurring false-negative pattern (\pi has no symbolic handling anywhere
+# in _sympy_equivalent -- \frac{9}{2}\pi vs \frac{9\pi}{2} etc.) that
+# intermediate_algebra's did not. Picked intermediate_algebra: same
+# headroom, no outstanding scorer gap, and a larger total pool (903 vs
+# geometry's hard-capped 479) if a bigger sample is ever needed.
+MATH_SUBJECT = "intermediate_algebra"
 
 MATH_SYSTEM = (
     "Solve the math problem. Show your reasoning, then give the final "
