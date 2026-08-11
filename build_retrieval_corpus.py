@@ -1,28 +1,43 @@
 """
 Phase 6 setup: build the retrieval corpus and run the contamination check.
 
-One-time (well, rerun-when-you-want-a-bigger-corpus) script -- NOT part of
-the eval loop. Retrieval itself (BM25 index load + top-k lookup) lives in
-elicit_task.py, wired into build_solver() via the `retrieval` toggle; this
-script only produces the two artifacts that toggle depends on:
+One-time (well, rerun-when-you-want-a-different-corpus) script -- NOT part
+of the eval loop. Retrieval itself (BM25 index load + top-k lookup) lives
+in elicit_task.py, wired into build_solver() via the `retrieval` toggle;
+this script only produces the two artifacts that toggle depends on:
     - suites/retrieval_corpus.jsonl   (the passages)
     - suites/contamination_report.json (the check required before trusting them)
 
-CORPUS CHOICE: a random sample of English Wikipedia (wikimedia/wikipedia,
-20231101.en dump), not a curated science/math subset. Deliberate choice,
-not laziness -- a curated "textbook-adjacent" corpus would make it easy to
-accidentally hand-pick passages close to GPQA/MATH's own source material,
-which is exactly the contamination risk this phase is supposed to guard
-against. A general corpus is a more honest test of whether retrieval helps
-at all, at the cost of a lower hit-rate for any specific question -- that
-tradeoff gets checked empirically in the Phase 6 smoke test (spot-check
-retrieved passages for topical relevance), not assumed here.
+CORPUS CHOICE, v2 -- topical, via Wikipedia category membership (not a
+random sample, see history below). v1 used a random sample of Wikipedia
+specifically to dodge contamination risk, on the theory that a curated
+"textbook-adjacent" corpus would make it easy to accidentally hand-pick
+passages close to GPQA/MATH's own source material. That reasoning was
+sound on contamination but wrong on the tradeoff: checked v1 against real
+GPQA/MATH questions and it returned near-random, topically irrelevant
+passages every time (e.g. "Toyota Group" for a quantum-mechanics
+question) -- a corpus that's safe but useless isn't actually a good
+tradeoff. v2 fixes relevance via Wikipedia's CATEGORY system (subject
+labels on articles), not by looking at GPQA/MATH's actual question
+content -- so it's not circular/contamination-inducing on its own, and
+the exact same contamination check below (SHINGLE_SIZE-word shingle
+overlap) is what actually verifies safety, same as v1. Topic categories
+are deliberately SUBJECT-SPECIFIC (e.g. "Quantum mechanics", not just
+"Physics") -- broad top-level categories mostly contain subcategories
+like "Physicists" (biographies) and "Physics by country" (institutional
+lists), not conceptual content, so starting subject-specific avoids that
+drift without needing deep, hard-to-tune category recursion.
 
-Sampling: streaming, shuffled with a fixed seed (reproducible), first
-N_DOCS taken after the shuffle buffer fills. Each doc is truncated to its
-first ~1500 characters (a passage, not the full article) -- long enough
-for real content, short enough to keep the BM25 index and per-eval prompt
-injection cheap.
+Fetches article TEXT directly from Wikipedia's own API
+(action=query&prop=extracts), not by streaming/filtering the 6.4M-article
+HF wikimedia/wikipedia dump by title -- confirmed the extracts endpoint
+returns clean plain-text article bodies directly for a batch of titles,
+which avoids having to scan a large fraction of the full HF dump looking
+for a comparatively small target title set.
+
+Each doc is truncated to its first ~1500 characters (a passage, not the
+full article) -- long enough for real content, short enough to keep the
+BM25 index and per-eval prompt injection cheap.
 
 CONTAMINATION CHECK: builds the set of all 8-word shingles across the
 entire corpus, then checks every GPQA/MATH/HumanEval question+target for
@@ -30,7 +45,8 @@ shingle overlap against that set. Shingle-set membership (not pairwise
 string comparison) so this is O(corpus + eval), not O(corpus x eval) --
 tractable at this corpus size, and would still be tractable at 10x. Any
 hit is a real thing to go look at by hand, not an automatic fail (could
-be an extremely generic 8-word phrase); reports every hit for that manual
+be an extremely generic 8-word phrase, e.g. a numbered-list coincidence
+-- see _is_generic_numeric below); reports every hit for that manual
 follow-up rather than silently thresholding them away.
 
 Usage:
@@ -39,41 +55,161 @@ Usage:
 
 import json
 import re
+import time
 from collections import defaultdict
 from pathlib import Path
 
+import httpx
 from dotenv import load_dotenv
-from datasets import load_dataset
 
 load_dotenv()  # GPQA (used in the contamination check) is HF-gated and
                 # needs HF_TOKEN -- not auto-loaded outside Inspect's own
                 # eval machinery, unlike when running via `inspect eval`.
 
-N_DOCS = 5000
-SHUFFLE_SEED = 42
-SHUFFLE_BUFFER = 10000
+WIKI_API = "https://en.wikipedia.org/w/api.php"
+HEADERS = {"User-Agent": "elicitation-harness-research/1.0"}
+
+# Subject-specific, not top-level -- see rationale in the module docstring.
+# Grouped by which suite each is meant to help; kept as one flat corpus
+# though (retrieval doesn't need to know which suite is asking).
+CATEGORIES = [
+    # GPQA: physics
+    "Category:Quantum mechanics", "Category:Classical mechanics",
+    "Category:Thermodynamics", "Category:Electromagnetism", "Category:Optics",
+    "Category:Particle physics", "Category:Nuclear physics",
+    "Category:Special relativity", "Category:Statistical mechanics",
+    # GPQA: chemistry
+    "Category:Organic chemistry", "Category:Physical chemistry",
+    "Category:Inorganic chemistry", "Category:Chemical bonding",
+    "Category:Chemical reactions", "Category:Stereochemistry",
+    "Category:Analytical chemistry",
+    # GPQA: biology
+    "Category:Molecular biology", "Category:Genetics", "Category:Cell biology",
+    "Category:Biochemistry", "Category:Enzymes", "Category:Evolutionary biology",
+    "Category:Microbiology",
+    # MATH (intermediate_algebra, plus adjacent math subjects)
+    "Category:Elementary algebra", "Category:Algebra",
+    "Category:Polynomials", "Category:Equations", "Category:Number theory",
+    "Category:Mathematical analysis", "Category:Inequalities",
+    "Category:Functions and mappings", "Category:Sequences and series",
+]
+
+# Subcategory titles containing any of these are excluded when descending
+# one level deeper -- biographical/institutional/meta content, not concepts.
+SUBCAT_EXCLUDE_PATTERNS = [
+    "people", "physicists", "chemists", "biologists", "mathematicians",
+    "by country", "by year", "by nationality", "history of", "list of",
+    "lists of", "works about", "in fiction", "awards", "societies",
+    "organizations", "journals", "conferences", "universities", "births",
+    "deaths", "stubs", "wikipedia", "categories",
+]
+
+MAX_TITLES = 4000       # cap on total unique article titles collected
 PASSAGE_CHARS = 1500
 SHINGLE_SIZE = 8  # words
 
 
-def build_corpus() -> list[dict]:
-    print(f"Streaming wikimedia/wikipedia 20231101.en, shuffled (seed={SHUFFLE_SEED}, "
-          f"buffer={SHUFFLE_BUFFER}), taking first {N_DOCS} after shuffle...")
-    ds = load_dataset("wikimedia/wikipedia", "20231101.en", split="train", streaming=True)
-    ds = ds.shuffle(seed=SHUFFLE_SEED, buffer_size=SHUFFLE_BUFFER)
+def _api_get(params: dict) -> dict:
+    """Every Wikipedia API call goes through here -- centralized so the
+    rate-limit handling below covers category traversal AND extract
+    fetching, not just the latter (the first version only paced the
+    extracts loop and immediately hit a 429 partway through the very
+    first category's subcategory scan, since category traversal fans out
+    into far more requests than the extracts loop does)."""
+    for attempt in range(6):
+        r = httpx.get(WIKI_API, params=params, headers=HEADERS, timeout=20)
+        if r.status_code == 429:
+            wait = float(r.headers.get("Retry-After", 2 * (attempt + 1)))
+            print(f"    (429, waiting {wait:.0f}s)")
+            time.sleep(wait)
+            continue
+        r.raise_for_status()
+        time.sleep(0.15)  # steady pacing, not just reactive backoff
+        return r.json()
+    raise RuntimeError(f"Wikipedia API: gave up after repeated 429s for {params}")
 
-    docs = []
-    for i, record in enumerate(ds):
-        if i >= N_DOCS:
+
+def _category_members(category: str, cmtype: str) -> list[dict]:
+    """One category's direct members (articles or subcats), paginated."""
+    members, cmcontinue = [], None
+    while True:
+        params = {
+            "action": "query", "list": "categorymembers", "cmtitle": category,
+            "cmlimit": 500, "cmtype": cmtype, "format": "json",
+        }
+        if cmcontinue:
+            params["cmcontinue"] = cmcontinue
+        data = _api_get(params)
+        members.extend(data.get("query", {}).get("categorymembers", []))
+        cmcontinue = data.get("continue", {}).get("cmcontinue")
+        if not cmcontinue:
+            return members
+
+
+def collect_titles() -> list[str]:
+    """BFS, depth 1: direct articles in each root category, plus direct
+    articles in each root's non-excluded subcategories. Depth capped at 1
+    deliberately -- deeper recursion drifts further from the subject-
+    specific root with each hop and gets harder to keep on-topic without
+    per-hop tuning; depth 1 already reaches thousands of candidate titles
+    (see MAX_TITLES), which is enough to test relevance meaningfully."""
+    titles: set[str] = set()
+    for cat in CATEGORIES:
+        print(f"  {cat}...")
+        pages = _category_members(cat, "page")
+        titles.update(p["title"] for p in pages)
+
+        subcats = _category_members(cat, "subcat")
+        subcats = [
+            s for s in subcats
+            if not any(pat in s["title"].lower() for pat in SUBCAT_EXCLUDE_PATTERNS)
+        ]
+        for sub in subcats:
+            sub_pages = _category_members(sub["title"], "page")
+            titles.update(p["title"] for p in sub_pages)
+
+        if len(titles) >= MAX_TITLES:
+            print(f"  hit MAX_TITLES={MAX_TITLES}, stopping category scan early")
             break
-        docs.append({
-            "id": record["id"],
-            "title": record["title"],
-            "url": record["url"],
-            "passage": record["text"][:PASSAGE_CHARS],
+
+    return sorted(titles)[:MAX_TITLES]
+
+
+def fetch_extracts(titles: list[str], batch_size: int = 20) -> list[dict]:
+    """Wikipedia's extracts API caps how many titles you can batch per
+    request (conservatively using 20 here); one request per batch. Pacing
+    and 429 handling both live in _api_get, not here."""
+    docs = []
+    for i in range(0, len(titles), batch_size):
+        batch = titles[i:i + batch_size]
+        data = _api_get({
+            "action": "query", "prop": "extracts", "titles": "|".join(batch),
+            "explaintext": 1, "format": "json",
         })
-        if (i + 1) % 1000 == 0:
-            print(f"  {i + 1}/{N_DOCS} docs collected")
+        for pageid, page in data.get("query", {}).get("pages", {}).items():
+            extract = page.get("extract", "")
+            if not extract or pageid.startswith("-"):  # "-1" = missing page
+                continue
+            docs.append({
+                "id": pageid,
+                "title": page["title"],
+                "url": "https://en.wikipedia.org/wiki/" + page["title"].replace(" ", "_"),
+                "passage": extract[:PASSAGE_CHARS],
+            })
+        if (i // batch_size) % 20 == 0:
+            print(f"  fetched extracts for {i + len(batch)}/{len(titles)} titles")
+    return docs
+
+
+def build_corpus() -> list[dict]:
+    print(f"Collecting article titles from {len(CATEGORIES)} subject categories...")
+    titles = collect_titles()
+    print(f"Collected {len(titles)} unique candidate titles.")
+
+    print("Fetching article extracts...")
+    docs = fetch_extracts(titles)
+    print(f"Got {len(docs)} docs with non-empty extracts "
+          f"({len(titles) - len(docs)} titles had no extract / were redirects).")
     return docs
 
 

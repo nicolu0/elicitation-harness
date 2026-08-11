@@ -10,27 +10,24 @@ Nobody disputes that the harness affects the benchmark score. OpenAI, the UK AI 
 
 ## Contents
 
-- [Why bother](#why-bother)
+- [Why this matters](#why-this-matters)
 - [What's new here](#whats-new-here)
 - [The four things we test](#the-four-things-we-test)
 - [How it works](#how-it-works)
-- [Install](#install)
-- [Quickstart](#quickstart)
 - [Components and the budget knob](#components-and-the-budget-knob)
 - [Methodology](#methodology)
 - [Findings](#findings)
 - [How this maps onto evaluation vocabulary](#how-this-maps-onto-evaluation-vocabulary)
 - [Repo structure](#repo-structure)
 - [Reproducibility](#reproducibility)
-- [Who this is useful for](#who-this-is-useful-for)
 - [Limitations](#limitations)
 - [Prior work](#prior-work)
 - [Roadmap](#roadmap)
-- [License and citation](#license-and-citation)
+- [License](#license)
 
 ---
 
-## Why bother
+## Why this matters
 
 Research has been done to conclude that benchmark scores depend on the harness. This is now a basic assumption. Here's more information:
 
@@ -104,46 +101,6 @@ Models sit behind Inspect AI's provider layer, so switching from `openai/gpt-4o-
 So far this has only been run against OpenAI's hosted API and Together's hosted open-weight inference. A fully local vLLM endpoint should work through the same interface, since Inspect supports it, but nobody has actually pointed this harness at one yet. Treat that path as designed for, not verified, until someone exercises it.
 
 Each component is a plugin you can switch on or off independently. Budget gets swept as an axis alongside the on/off switches, because otherwise there's no way to tell components and compute apart. The runner works through components × budget × model × seed, and the four analyses at the end are the output.
-
-## Install
-
-```bash
-git clone https://github.com/<you>/elicitation-harness && cd elicitation-harness
-uv venv --python 3.11 && source .venv/bin/activate
-uv pip install inspect-ai openai
-uv pip install "inspect_evals @ git+https://github.com/UKGovernmentBEIS/inspect_evals"
-cp .env.example .env   # add one provider key
-```
-
-## Quickstart
-
-Check that everything works, then run a small slice:
-
-```bash
-inspect eval inspect_evals/gsm8k --model openai/gpt-4o-mini --limit 20   # smoke test
-inspect view
-python run_ablation.py                                                   # component slice
-```
-
-Reproduce the main study (components × budget × two models):
-
-```bash
-elicit run --config experiments/transfer_and_budget.yaml
-elicit report experiments/transfer_and_budget.yaml   # writes results/ + figures/
-```
-
-```yaml
-# experiments/transfer_and_budget.yaml
-models:
-  - {name: small, endpoint: http://localhost:8000/v1}   # same family, two sizes
-  - {name: large, endpoint: http://localhost:8001/v1}
-tasks: suites/swe_verified_mini
-components: [tool_use, retrieval, self_critique, multi_critic, best_of_n, planning]
-budgets:   [low, mid, high]      # token / retry / N caps, swept as an axis
-ablation:  shapley               # exact, over all 2^n component configs
-seeds:     5
-budget_usd: 60
-```
 
 ## Components and the budget knob
 
@@ -220,7 +177,7 @@ elicitation-harness/
 └── writeup/           # the report / blog post
 ```
 
-The framework doesn't care which models or tasks you point it at. The specific study lives in `experiments/` as one config file, so someone who's never seen the repo can rerun it, or swap in their own models and tasks.
+The framework doesn't care which models or tasks it's pointed at. Each specific study lives in `experiments/` as one config file, kept separate from the framework code so new studies don't mean touching the runner.
 
 ## Reproducibility
 
@@ -228,23 +185,11 @@ Pinned model and dependency versions, fixed seeds, `results/` committed to the r
 
 Worth knowing: even at temperature 0, model outputs are not perfectly reproducible. Batching, hardware differences, and floating point ordering all introduce small variations. That's why every number here is a mean over multiple seeds with an interval attached, rather than a single run reported as fact.
 
-## Who this is useful for
-
-**Evaluators and AI safety institutes.** The per model fixed-harness deficit answers a concrete question: is this comparison biased, and by how much? The per component breakdown tells you which harness features you have to hold constant for a comparison to mean anything.
-
-**Anyone picking a model.** The substitution map plus cost per solve tells you which model-and-scaffold combination clears your quality bar for the least money, and warns you when the bare benchmark ranking would have steered you wrong.
-
-**Teams building agents.** The per component breakdown shows which parts of your scaffold are earning their latency and which are dead weight, and at which budget levels that changes.
-
-**Teams migrating from a closed API to open weights.** Once there's no vendor-tuned default scaffold underneath you, the per component breakdown tells you which harness pieces are worth building in house, and the fixed-harness deficit puts a number on how much quality a naive migration gives up compared to a well scaffolded one.
-
-**Capability forecasting and risk work.** Under-eliciting a model means under-reporting what it can do, including things you'd want to know about. This measures how much you're under-reporting, and whether the shortfall is worse for some models than others.
-
 ## Limitations
 
 - We are not claiming to have discovered that the harness matters. That's established. The contribution is the breakdown, the substitution structure, and the transfer result.
 - Inference time only, no fine-tuning. The results bound elicited capability, which is already a lower bound on what the weights can do.
-- Results are specific to the task suites, model families, and budget range we tested. Whether they generalize is something other people can check with the same tool.
+- Results are specific to the task suites, model families, and budget range tested. Whether they generalize further is open — not yet checked.
 - "Capability" here means task success under a particular scoring rule. That's a narrow definition, chosen because narrow ones are the ones you can check.
 
 ## Prior work
@@ -259,15 +204,6 @@ Worth knowing: even at temperature 0, model outputs are not perfectly reproducib
 
 Same machinery, pointed at a safety question: **control under chain of thought monitoring**. If you show an untrusted agent's reasoning to a weaker monitor model, does that help catch sabotage, or does it just teach the agent to hide its intent inside plausible looking reasoning? That study reuses the components, the tracing, the budget axis, and the model interface built here.
 
-## License and citation
+## License
 
 MIT.
-
-```bibtex
-@software{elicitation_harness,
-  author = {<Your Name>},
-  title  = {Elicitation Harness: decomposing the harness contribution to LLM capability},
-  year   = {2026},
-  url    = {https://github.com/<you>/elicitation-harness}
-}
-```
