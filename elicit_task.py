@@ -105,9 +105,18 @@ GSM8K_SYSTEM = (
 # geometry's hard-capped 479) if a bigger sample is ever needed.
 MATH_SUBJECT = "intermediate_algebra"
 
+# Was "Show your reasoning, then give the final answer..." unconditionally
+# -- used for every config regardless of the `cot` toggle, so the "bare"
+# MATH condition was never actually reasoning-free the way GPQA's is.
+# GPQA hit the identical bug earlier (see the CoT-leak fix in
+# process_log.md) and the fix there was to make the FIXED system prompt
+# bare-safe ("do not explain your reasoning") and rely entirely on the
+# `chain_of_thought()` solver step -- added only when cot=True in
+# build_solver() above -- as the sole source of reasoning. Mirrored here.
 MATH_SYSTEM = (
-    "Solve the math problem. Show your reasoning, then give the final "
-    "answer wrapped in \\boxed{...} on its own line at the end."
+    "Solve the math problem. Give ONLY the final answer, wrapped in "
+    "\\boxed{...}, on its own line. Do not show your work or explain "
+    "your reasoning."
 )
 
 

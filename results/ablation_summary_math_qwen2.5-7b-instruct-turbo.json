@@ -1,0 +1,123 @@
+{
+  "model": "together/Qwen/Qwen2.5-7B-Instruct-Turbo",
+  "suite": "math",
+  "limit": 500,
+  "temperature": 0.7,
+  "seeds": [
+    1,
+    2,
+    3,
+    4,
+    5
+  ],
+  "results": {
+    "bare": [
+      {
+        "seed": 1,
+        "accuracy": 0.506,
+        "log": "/Users/nicoluo/dev/elicitation-harness/logs/2026-08-11T05-20-16-00-00_elicit_7aBT24yMHiDzR9k8YhjekB.eval"
+      },
+      {
+        "seed": 2,
+        "accuracy": 0.532,
+        "log": "/Users/nicoluo/dev/elicitation-harness/logs/2026-08-11T05-21-30-00-00_elicit_9uhKeUb2VgHeatK4kxSzf5.eval"
+      },
+      {
+        "seed": 3,
+        "accuracy": 0.518,
+        "log": "/Users/nicoluo/dev/elicitation-harness/logs/2026-08-11T05-22-42-00-00_elicit_6McEsbAVuxZB6GLcvzaN2E.eval"
+      },
+      {
+        "seed": 4,
+        "accuracy": 0.548,
+        "log": "/Users/nicoluo/dev/elicitation-harness/logs/2026-08-11T05-23-57-00-00_elicit_7BUCQRwAxqiXE3xajgvPhH.eval"
+      },
+      {
+        "seed": 5,
+        "accuracy": 0.528,
+        "log": "/Users/nicoluo/dev/elicitation-harness/logs/2026-08-11T05-25-07-00-00_elicit_oLyXVnUatimY44aRM8CjyY.eval"
+      }
+    ],
+    "critique": [
+      {
+        "seed": 1,
+        "accuracy": 0.498,
+        "log": "/Users/nicoluo/dev/elicitation-harness/logs/2026-08-11T05-26-15-00-00_elicit_Hwe5PrvsSei89wJDtjh9HL.eval"
+      },
+      {
+        "seed": 2,
+        "accuracy": 0.494,
+        "log": "/Users/nicoluo/dev/elicitation-harness/logs/2026-08-11T05-28-43-00-00_elicit_TkJYom7YLsTamXhzGDa2hr.eval"
+      },
+      {
+        "seed": 3,
+        "accuracy": 0.434,
+        "log": "/Users/nicoluo/dev/elicitation-harness/logs/2026-08-11T05-30-59-00-00_elicit_9mttDg7WLSd5ietoT5s8Rq.eval"
+      },
+      {
+        "seed": 4,
+        "accuracy": 0.51,
+        "log": "/Users/nicoluo/dev/elicitation-harness/logs/2026-08-11T05-32-36-00-00_elicit_dv5usAzbKAmcxTeAEQN4x3.eval"
+      },
+      {
+        "seed": 5,
+        "accuracy": 0.508,
+        "log": "/Users/nicoluo/dev/elicitation-harness/logs/2026-08-11T05-34-26-00-00_elicit_7VEEeBWknvqtX99zHnXRU8.eval"
+      }
+    ],
+    "cot": [
+      {
+        "seed": 1,
+        "accuracy": 0.494,
+        "log": "/Users/nicoluo/dev/elicitation-harness/logs/2026-08-11T05-36-16-00-00_elicit_ExcJJ3jPA3SK3d9JBnYViV.eval"
+      },
+      {
+        "seed": 2,
+        "accuracy": 0.494,
+        "log": "/Users/nicoluo/dev/elicitation-harness/logs/2026-08-11T05-37-16-00-00_elicit_MZKXR2fJqS7JQbPxXSLEbY.eval"
+      },
+      {
+        "seed": 3,
+        "accuracy": 0.49,
+        "log": "/Users/nicoluo/dev/elicitation-harness/logs/2026-08-11T05-38-14-00-00_elicit_ezEpk4zXhoVfuzoND5P52o.eval"
+      },
+      {
+        "seed": 4,
+        "accuracy": 0.504,
+        "log": "/Users/nicoluo/dev/elicitation-harness/logs/2026-08-11T05-39-07-00-00_elicit_AbStQNR9dof4wDsbstJ3nM.eval"
+      },
+      {
+        "seed": 5,
+        "accuracy": 0.478,
+        "log": "/Users/nicoluo/dev/elicitation-harness/logs/2026-08-11T05-40-02-00-00_elicit_kMdi7sfBodhAGqvD3QrN82.eval"
+      }
+    ],
+    "cot+critique": [
+      {
+        "seed": 1,
+        "accuracy": 0.492,
+        "log": "/Users/nicoluo/dev/elicitation-harness/logs/2026-08-11T05-41-00-00-00_elicit_TRTRnT7KpEEJePn4CxvhFW.eval"
+      },
+      {
+        "seed": 2,
+        "accuracy": 0.472,
+        "log": "/Users/nicoluo/dev/elicitation-harness/logs/2026-08-11T05-42-54-00-00_elicit_GtfBvtuVNkrHXGU6qWEtq3.eval"
+      },
+      {
+        "seed": 3,
+        "accuracy": 0.366,
+        "log": "/Users/nicoluo/dev/elicitation-harness/logs/2026-08-11T05-44-49-00-00_elicit_dJ3TR4B9oHMMr3j4DgDNBp.eval"
+      },
+      {
+        "seed": 4,
+        "accuracy": 0.482,
+        "log": "/Users/nicoluo/dev/elicitation-harness/logs/2026-08-11T05-46-32-00-00_elicit_jLiWowmXPxNovsa56NJeFm.eval"
+      },
+      {
+        "seed": 5,
+        "accuracy": 0.452,
+        "log": "/Users/nicoluo/dev/elicitation-harness/logs/2026-08-11T05-48-20-00-00_elicit_VPyBbddkN2rYRPjaSEfs3b.eval"
+      }
+    ]
+  }
+}

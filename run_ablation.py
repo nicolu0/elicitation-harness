@@ -48,17 +48,25 @@ from inspect_ai import eval as inspect_eval
 
 from elicit_task import elicit
 
-# Swap this for your open-model pair once the pipe works, e.g.
-#   "together/Qwen/Qwen2.5-7B-Instruct-Turbo"   (CONFIRM the current id!)
+# OpenAI credits restored 2026-08-11 -- back to the original model. The
+# Together/Qwen2.5-7B-Instruct-Turbo MATH run stays on record as its own
+# result (results/ablation_summary_math_qwen2.5-7b-instruct-turbo.json,
+# renamed out of the way -- see process_log.md), specifically so THIS run
+# can be the clean same-model comparison against GPQA that was always the
+# point, without clobbering the Qwen data.
 MODEL = "openai/gpt-4o-mini"
 
 # Which registered adapter to run (see ADAPTERS in elicit_task.py):
 # "gsm8k" | "math" | "gpqa"
-SUITE = "gpqa"
+SUITE = "math"
 
-# Samples per config per seed. For GPQA Diamond this is capped at 198
-# (the whole dataset) -- raising LIMIT past that does nothing.
-LIMIT = 200
+# Samples per config per seed. GPQA Diamond is hard-capped at 198 (the
+# whole dataset). MATH's subject (see MATH_SUBJECT in elicit_task.py --
+# currently intermediate_algebra) has 903 total test problems, so 500 is
+# a real subset, not the cap -- chosen because it's the exact sample size
+# already spot-checked for both false positives and false negatives
+# (process_log.md, "Phase 3 revisit"), not an arbitrary round number.
+LIMIT = 500
 
 # Sampling temperature, applied IDENTICALLY to every config below.
 # 0.0 = deterministic (use for a quick single-run smoke test).
@@ -136,8 +144,15 @@ def main():
 
     # Save log paths grouped by config so mcnemar_test.py can pool across
     # seeds for a proper paired significance test, not just eyeball means.
+    # Suite AND model in the filename -- NEVER write a bare
+    # "ablation_summary.json" or a suite-only name here. Learned this the
+    # hard way twice: once when a MATH run would have clobbered GPQA's
+    # results/ablation_summary.json, and again when switching MATH from
+    # gpt-4o-mini to Together/Qwen2.5-7B (same suite, different model)
+    # would have clobbered the suite-only results/ablation_summary_math.json.
+    model_slug = MODEL.replace("/", "-").replace(":", "-").lower()
     Path("results").mkdir(exist_ok=True)
-    summary_path = Path("results/ablation_summary.json")
+    summary_path = Path(f"results/ablation_summary_{SUITE}_{model_slug}.json")
     with open(summary_path, "w") as f:
         json.dump(
             {
@@ -158,8 +173,8 @@ def main():
         )
     print(f"\nSaved log paths -> {summary_path}")
     print(
-        "Run `python mcnemar_test.py --pooled results/ablation_summary.json "
-        "bare cot` to test bare vs cot pooled across all seeds."
+        f"Run `python mcnemar_test.py --pooled {summary_path} "
+        f"bare cot` to test bare vs cot pooled across all seeds."
     )
     print("Run `inspect view` to inspect transcripts and token/cost usage.")
 

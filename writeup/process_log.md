@@ -408,6 +408,215 @@ better shape at adoption time than GPQA or algebra ever were.
 
 ---
 
+## Phase 4 — MATH ablation: OpenAI credit exhaustion, and a Together model-selection detour
+
+Kicked off the actual point of everything above — the full 4-config ×
+5-seed ablation on `intermediate_algebra` (n=500), mirroring the GPQA
+protocol exactly (`run_ablation.py`, `SUITE = "math"`, `MODEL =
+"openai/gpt-4o-mini"`, unchanged).
+
+**OpenAI account ran out of credits mid-run.** `bare` seed 1-4 completed
+cleanly (accuracy 0.548, 0.524, 0.538, 0.572 — consistent with the 0.552
+n=500 pilot), then seed 5 onward hit `RateLimitError 429
+credit_balance_exhausted` and sat retrying with exponential backoff
+(30 min waits) until the run was killed. Nothing lost — the 4 completed
+seeds' `.eval` logs are safe in `logs/`, and `results/ablation_summary_
+math.json` is only written at the very end of the script, so the partial
+run never got a chance to overwrite anything.
+
+**Fixed a real risk in `run_ablation.py` while switching suites, before
+running anything:** it previously wrote unconditionally to
+`results/ablation_summary.json`, which already held the GPQA run — a MATH
+run would have silently clobbered it. Changed the output path to be
+suite-specific (`results/ablation_summary_{SUITE}.json`), and updated the
+script's own printed follow-up command to match. This is the exact
+failure mode Phase 4's acceptance criteria warns about ("don't let a MATH
+run silently overwrite the GPQA one").
+
+**Decision: switch to Together rather than wait for OpenAI credits.**
+Added `TOGETHER_API_KEY` to `.env`. Confirmed Inspect's built-in Together
+provider needs exactly that env var name (checked the provider source
+directly rather than assuming) — no code/wiring changes needed, just a
+model id and `together/<id>` as the model string.
+
+**Tried `Qwen/Qwen2.5-7B-Instruct-Turbo` first** (the id already hinted at
+in `run_ablation.py`'s old comment). Confirmed live via a n=5 smoke test,
+then an n=40 headroom pilot on intermediate_algebra: **0.525 accuracy** —
+close to gpt-4o-mini's 0.552, no ceiling/floor problem for this model
+either. Launched the full ablation on it.
+
+**Interrupted mid-run to evaluate `Qwen/Qwen3.5-9B` and `Qwen/Qwen3.5-
+397B-A17B` instead**, per a direct request. Neither name matches any
+Qwen generation in training knowledge (Qwen → 1.5 → 2 → 2.5 → 3), so
+checked Together's live `/v1/models` API rather than assuming either a
+typo or a hallucination — **both are real, currently-hosted models**,
+released after the assistant's January 2026 knowledge cutoff. Pricing
+pulled from the same API response:
+
+| model | input $/1M | output $/1M |
+|---|---|---|
+| Qwen2.5-7B-Instruct-Turbo | 0.30 | 0.30 |
+| Qwen3.5-9B | 0.17 | 0.25 |
+| Qwen3.5-397B-A17B | 0.60 | **3.60** |
+
+397B-A17B's output pricing is 12x the small model's — a full 20-run
+ablation would cost roughly $3 on Qwen3.5-9B vs **~$40 on the 397B model**,
+against the README's own stated $60 total budget for the eventual full
+cross-model study. Also: 9B+397B is exactly the same-family small/large
+pair Phase 8 (cross-model transfer) will eventually need — using both now
+would mean jumping ahead of Phases 5-7 in the roadmap. **Decision: use
+only Qwen3.5-9B for now**, save the pair for when Phase 8 actually comes
+up.
+
+**Qwen3.5-9B turned out to be unusable at a reasonable token budget.**
+n=40 pilot at default max_tokens: **0.050 accuracy** — implausibly low
+for a model newer than Qwen2.5-7B. Investigated rather than accepting the
+number: 38/40 samples had `stop_reason: max_tokens` with a **completely
+empty completion** (0 chars). Raised `max_tokens` to 16000 and re-tested
+at n=10: accuracy recovered to 0.4, but 6/10 samples *still* had no
+`\boxed{}` (one still hit the 16000 ceiling with only 3,145 chars of
+visible output), and cost ballooned (128,666 tokens for just 10 samples,
+~12.7k tokens/sample vs Qwen2.5-7B's ~850/sample). Checked the raw
+message object for a separate hidden-reasoning field (the DeepSeek-R1/
+`<think>`-tag pattern) — none present; this model is just extremely
+verbose in its visible answer content, not hiding tokens elsewhere.
+
+**Side finding, not yet acted on:** this surfaced that `MATH_SYSTEM` (the
+system prompt used for every MATH config, `cot` toggle or not) has always
+said *"Show your reasoning, then give the final answer..."* — MATH never
+got the same bare-vs-cot system-prompt split that GPQA's
+`GPQA_SYSTEM_BASE`/`GPQA_SYSTEM` did after the CoT-leak bug (see Phase 3
+above). This didn't cause visible problems for gpt-4o-mini or Qwen2.5-7B
+(concise enough to stay within budget regardless), but it means MATH's
+"bare" condition has technically never been fully reasoning-free for any
+model — worth fixing before treating MATH's bare-vs-cot delta as
+precisely comparable to GPQA's. Flagged, not fixed — out of scope for
+unblocking the current ablation.
+
+**Decision: reverted to `Qwen/Qwen2.5-7B-Instruct-Turbo`.** Already
+validated clean (smoke test + n=40 pilot, zero boxed-answer failures,
+reasonable token usage) and unblocks the actual goal — the MATH ablation
+run — without an open-ended debugging detour into a verbose reasoning
+model. Re-launched the full 4-config × 5-seed × n=500 ablation on it.
+
+**Standing caveat, restated:** the eventual GPQA-vs-MATH replication
+check is now comparing gpt-4o-mini (GPQA) against Qwen2.5-7B-Instruct-
+Turbo (MATH) — a suite change confounded with a model change. Re-run MATH
+on gpt-4o-mini once OpenAI credits are back for a clean comparison;
+treat this Together run as a preview until then.
+
+## Phase 4 — MATH ablation results (Qwen2.5-7B, intermediate_algebra): the opposite pattern from GPQA
+
+Full 4-config × 5-seed × n=500 run completed cleanly (all 20 runs, zero
+errors), saved to `results/ablation_summary_math.json` (confirmed
+separate from GPQA's `results/ablation_summary.json` — the overwrite-risk
+fix above worked).
+
+```
+bare             mean=0.526  (seed stdev=0.014)
+critique         mean=0.489  (seed stdev=0.028)   (-0.038)
+cot              mean=0.492  (seed stdev=0.008)   (-0.034)
+cot+critique     mean=0.453  (seed stdev=0.045)   (-0.074)
+```
+
+Ran the same two pooled McNemar tests as GPQA:
+
+**bare vs cot:** pooled 2x2 (490 total disagreements across 5 seeds):
+bare-right/cot-wrong=288, cot-right/bare-wrong=202. Exact McNemar
+**p=0.0001 — significant**. But the direction is reversed from GPQA:
+**CoT makes this worse**, not better.
+
+**cot vs cot+critique:** pooled 2x2 (584 disagreements): cot-right/
+critique-wrong=341, critique-right/cot-wrong=243. Exact McNemar
+**p=0.0001 — significant**. Critique makes it worse again, on top of an
+already-worse cot.
+
+**This is a real, well-powered effect (490 and 584 discordant pairs off
+~2,500 samples per config each — not a small-sample fluke), and it is the
+opposite pattern from GPQA in every respect**: on GPQA, cot helped
+(+7.1pts→+3.5pts pooled, p=0.04) and critique was statistically neutral
+on top of it (p=0.887); here, cot hurts and critique hurts further, both
+at p=0.0001. Read naively, this is exactly the kind of comparison-flip /
+non-transferring-attribution result the whole project exists to find.
+
+**But it cannot be attributed to suite vs. model yet — it's confounded.**
+GPQA ran on gpt-4o-mini; this MATH run is on Qwen2.5-7B-Instruct-Turbo
+(the OpenAI-credit-exhaustion detour above). Two candidate explanations,
+not yet distinguished:
+1. A genuine suite effect — MATH's `MATH_SYSTEM` prompt already says
+   "show your reasoning" in the bare condition (the prompt-split gap
+   flagged above), so `cot`'s marginal step may be adding redundant or
+   conflicting reasoning instructions rather than eliciting reasoning
+   that wasn't there before, unlike GPQA where bare was verified
+   genuinely reasoning-free after the CoT-leak fix.
+2. A genuine model effect — Qwen2.5-7B may just be worse at using
+   extended reasoning/self-critique productively than gpt-4o-mini,
+   independent of which suite it's tested on.
+Cannot tell which without re-running MATH on gpt-4o-mini (isolates the
+model variable) and/or fixing the `MATH_SYSTEM` prompt split (isolates
+the suite-design variable) — both already open items below. Do not
+report this as a confirmed cross-suite finding until at least one of
+those is done.
+
+## Phase 3/4 — MATH_SYSTEM prompt-leak fix: confirmed, and the effect size is large
+
+Fixed before spending any more compute on MATH, per external review of
+this process log (correctly pointed out that re-running on gpt-4o-mini
+without fixing the prompt first would just re-confound a different
+pairing) — killed the gpt-4o-mini ablation that was already running on
+the leaky prompt rather than let it finish and waste the budget on data
+that would need to be discarded anyway.
+
+**Fix, mirroring GPQA's identical fix exactly:** `MATH_SYSTEM` used to say
+"Show your reasoning, then give the final answer..." *unconditionally*,
+for every config regardless of the `cot` toggle. Changed it to "Give
+ONLY the final answer, wrapped in `\boxed{...}`... Do not show your work
+or explain your reasoning" — the fixed prompt used for every config, with
+`chain_of_thought()` (added only when `cot=True` in `build_solver()`) as
+the sole source of reasoning, exactly matching how `GPQA_SYSTEM_BASE`
+already works.
+
+**Validated the same way GPQA's fix was validated — output token counts,
+not just accuracy:** n=20 pilot on gpt-4o-mini, intermediate_algebra:
+
+| condition | avg output tokens/sample | accuracy |
+|---|---|---|
+| bare | 63 | 0.250 |
+| cot | 518 (8x more) | 0.400 |
+
+`\boxed{}` extraction still works with the new prompt (0/20 failures
+either condition) — the model doesn't need to be told to "show work" to
+know to wrap its final answer.
+
+**The effect size is large, not cosmetic.** The old (leaky) bare
+condition measured 0.552 accuracy at n=500 on this exact suite+model. The
+properly-bare condition lands at ~0.25 — the leaked reasoning instruction
+was roughly *doubling* measured bare accuracy. This confirms the
+confound was real and substantial, not a theoretical nitpick.
+
+**Consequence, stated explicitly per the review's point 2: every MATH
+result generated before this fix is provisional, not just the eventual
+model comparison.** That includes:
+- The full Qwen2.5-7B-Instruct-Turbo ablation
+  (`results/ablation_summary_math_qwen2.5-7b-instruct-turbo.json`) — the
+  "cot hurts, critique hurts more" finding was measured with a
+  contaminated bare condition and needs to be treated as unconfirmed
+  until re-run.
+- The 7-subject headroom comparison (algebra's 0.909 ceiling, geometry
+  vs intermediate_algebra at n=500, etc.) — subject *rankings* are
+  probably still roughly informative since every subject was measured
+  with the same leak applied uniformly, but none of the absolute
+  accuracy numbers can be trusted anymore.
+
+Not re-running the full subject comparison right now (would be a large
+compute spend to re-verify a ranking that's plausibly still correct) but
+flagging it here so nobody cites those absolute numbers later without
+this caveat. Proceeding straight to the gpt-4o-mini ablation with the
+fixed prompt, since that's the one both this and the GPQA comparison
+actually depend on.
+
+---
+
 ## Open item / next entry to add
 
 - [x] Record pooled McNemar p-value: bare vs cot — p=0.0401, significant
@@ -425,15 +634,32 @@ better shape at adoption time than GPQA or algebra ever were.
       system-prompt bug and the CoT-leak fix have been examined) — run
       `spot_check.py` against a GPQA log before treating GPQA's numbers
       as equally scrutinized
-- [ ] Run the full 4-config × 5-seed ablation on intermediate_algebra
-      (same protocol as the GPQA one already in
-      `results/ablation_summary.json`), then the pooled McNemar tests,
-      then check whether the "critique adds nothing on top of cot"
-      finding replicates on a second, structurally different suite
+- [x] Run the full 4-config × 5-seed ablation on intermediate_algebra —
+      DONE, all 20 runs completed cleanly on `together/Qwen/Qwen2.5-7B-
+      Instruct-Turbo`, saved to `results/ablation_summary_math.json`
+- [x] Pooled McNemar on MATH: bare vs cot — p=0.0001, significant, but
+      **cot is worse than bare** (opposite direction from GPQA)
+- [x] Pooled McNemar on MATH: cot vs cot+critique — p=0.0001, significant,
+      critique makes it worse again. Both documented above, with the
+      confound (suite change AND model change at once) stated explicitly
+      — this is NOT yet a confirmed cross-suite finding
+- [ ] Re-run the MATH ablation on `openai/gpt-4o-mini` once OpenAI
+      credits are restored, for a clean same-model comparison against GPQA
+- [ ] Fix `MATH_SYSTEM` to have a true bare-vs-cot split, the same way
+      GPQA's `GPQA_SYSTEM_BASE`/`GPQA_SYSTEM` do — currently every MATH
+      config's system prompt says "show your reasoning" regardless of the
+      `cot` toggle, which only became visible as a problem with a verbose
+      model (Qwen3.5-9B) but is a latent validity issue for every MATH
+      result so far, including gpt-4o-mini's and Qwen2.5-7B's
+- [ ] GPQA still has no false-positive check at all (only the
+      system-prompt bug and the CoT-leak fix have been examined) — run
+      `spot_check.py` against a GPQA log before treating GPQA's numbers
+      as equally scrutinized
 - [ ] Held-out/private contamination slice — still not done for either
       suite
 - [ ] Power/sample-size justification and compute/dollar feasibility
       estimate for the eventual 64-config sweep — still not done, though
-      real per-sample cost data now exists (n=500 intermediate_algebra
-      run: 611,833 tokens, 4m42s, gpt-4o-mini pricing) to base it on
+      real per-sample cost data now exists for both gpt-4o-mini (n=500
+      intermediate_algebra: 611,833 tokens, 4m42s) and Qwen2.5-7B-
+      Instruct-Turbo (n=40: 39,100 tokens, 23s) to base it on
 - [ ] Then: begin Phase 5 (tool use, Docker sandbox)
