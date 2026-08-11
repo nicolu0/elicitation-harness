@@ -34,8 +34,11 @@ import re
 from dataclasses import dataclass
 from typing import Callable
 
-import json
-from functools import lru_cache
+# json, lru_cache: only needed by the retrieval component, commented out
+# below (see "Retrieval component" block) -- re-enable both if retrieval
+# comes back.
+# import json
+# from functools import lru_cache
 
 from inspect_ai import Task, task
 from inspect_ai.dataset import Dataset, Sample, hf_dataset
@@ -56,60 +59,69 @@ from inspect_ai.tool import python
 from inspect_ai.util import sandbox
 
 # --------------------------------------------------------------------------
-# Retrieval component: BM25 lookup over suites/retrieval_corpus.jsonl
-# (built + contamination-checked by build_retrieval_corpus.py -- see
-# suites/contamination_report.json before trusting this on a new suite).
+# Retrieval component -- DROPPED FOR NOW (2026-08-11), not deleted.
+# Scope decision: doing 5 of 6 README components + Shapley + cross-model
+# (Qwen/Llama) rather than all 6. Retrieval was the most troubled
+# component this session (three real bugs: a random corpus that returned
+# near-random passages on real GPQA/MATH questions, a Wikipedia rate
+# limit, and a MediaWiki API quirk that silently discarded 95% of fetched
+# articles) and even after the v2 category-filtered rebuild finished
+# (suites/retrieval_corpus.jsonl, 3916 docs), its relevance was never
+# smoke-tested. See process_log.md for the full history. Commented out,
+# not deleted, so it's cheap to re-enable if there's time/budget later --
+# uncomment this block, the `use_retrieval`/`retrieval` toggle lines in
+# build_solver() and elicit() below, and the json/lru_cache imports above.
 # --------------------------------------------------------------------------
 
-RETRIEVAL_CORPUS_PATH = "suites/retrieval_corpus.jsonl"
-RETRIEVAL_TOP_K = 3
-
-
-@lru_cache(maxsize=1)
-def _load_bm25_index():
-    """Lazy + cached: only paid once per process, and only if `retrieval`
-    is actually toggled on -- configs that never use retrieval never pay
-    for loading or indexing the corpus."""
-    from rank_bm25 import BM25Okapi
-
-    docs = []
-    with open(RETRIEVAL_CORPUS_PATH) as f:
-        for line in f:
-            docs.append(json.loads(line))
-    tokenized = [d["passage"].lower().split() for d in docs]
-    return BM25Okapi(tokenized), docs
-
-
-def _retrieve(query: str, k: int = RETRIEVAL_TOP_K) -> list[dict]:
-    bm25, docs = _load_bm25_index()
-    scores = bm25.get_scores(query.lower().split())
-    top_idx = sorted(range(len(docs)), key=lambda i: scores[i], reverse=True)[:k]
-    return [docs[i] for i in top_idx]
-
-
-@solver
-def retrieval() -> Solver:
-    """Retrieves top-k BM25 passages for the sample's own input text and
-    prepends them to the user prompt, clearly labeled as reference
-    material rather than instructions -- this is the `retrieval` toggle's
-    entire job; everything else about answering the question is
-    unaffected. Runs BEFORE generate() in build_solver() so the retrieved
-    context is present for the model's first (and only, if cot/critique
-    are off) generation."""
-
-    async def solve(state: TaskState, generate: Generate) -> TaskState:
-        passages = _retrieve(state.input_text)
-        context = "\n\n".join(
-            f"[Reference {i+1}: {p['title']}]\n{p['passage']}"
-            for i, p in enumerate(passages)
-        )
-        state.user_prompt.text = (
-            f"Reference material (may or may not be relevant to the "
-            f"question below):\n\n{context}\n\n---\n\n{state.user_prompt.text}"
-        )
-        return state
-
-    return solve
+# RETRIEVAL_CORPUS_PATH = "suites/retrieval_corpus.jsonl"
+# RETRIEVAL_TOP_K = 3
+#
+#
+# @lru_cache(maxsize=1)
+# def _load_bm25_index():
+#     """Lazy + cached: only paid once per process, and only if `retrieval`
+#     is actually toggled on -- configs that never use retrieval never pay
+#     for loading or indexing the corpus."""
+#     from rank_bm25 import BM25Okapi
+#
+#     docs = []
+#     with open(RETRIEVAL_CORPUS_PATH) as f:
+#         for line in f:
+#             docs.append(json.loads(line))
+#     tokenized = [d["passage"].lower().split() for d in docs]
+#     return BM25Okapi(tokenized), docs
+#
+#
+# def _retrieve(query: str, k: int = RETRIEVAL_TOP_K) -> list[dict]:
+#     bm25, docs = _load_bm25_index()
+#     scores = bm25.get_scores(query.lower().split())
+#     top_idx = sorted(range(len(docs)), key=lambda i: scores[i], reverse=True)[:k]
+#     return [docs[i] for i in top_idx]
+#
+#
+# @solver
+# def retrieval() -> Solver:
+#     """Retrieves top-k BM25 passages for the sample's own input text and
+#     prepends them to the user prompt, clearly labeled as reference
+#     material rather than instructions -- this is the `retrieval` toggle's
+#     entire job; everything else about answering the question is
+#     unaffected. Runs BEFORE generate() in build_solver() so the retrieved
+#     context is present for the model's first (and only, if cot/critique
+#     are off) generation."""
+#
+#     async def solve(state: TaskState, generate: Generate) -> TaskState:
+#         passages = _retrieve(state.input_text)
+#         context = "\n\n".join(
+#             f"[Reference {i+1}: {p['title']}]\n{p['passage']}"
+#             for i, p in enumerate(passages)
+#         )
+#         state.user_prompt.text = (
+#             f"Reference material (may or may not be relevant to the "
+#             f"question below):\n\n{context}\n\n---\n\n{state.user_prompt.text}"
+#         )
+#         return state
+#
+#     return solve
 
 
 PLANNING_PROMPT = (
@@ -156,8 +168,11 @@ def build_solver(
     tool_use: bool = False, use_retrieval: bool = False, use_planning: bool = False,
 ):
     steps = [system_message(system_prompt)]
-    if use_retrieval:
-        steps.append(retrieval())
+    # retrieval dropped for now -- see "Retrieval component" comment block
+    # above. use_retrieval is accepted but currently a no-op; uncomment
+    # below (and the retrieval() solver above) to bring it back.
+    # if use_retrieval:
+    #     steps.append(retrieval())
     if use_planning:
         steps.append(planning())
     if cot:

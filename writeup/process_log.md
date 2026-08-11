@@ -837,6 +837,144 @@ API budget being free again.
 
 ---
 
+## Scope decision — 4-component Shapley study on Qwen + Llama, and why
+
+Reconsidered project scope mid-session: rather than stopping at "looks
+complete" (roughly Phase 4/5), decided to push toward a real Shapley
+attribution study (Phase 10) plus cross-model comparison (a scoped
+version of Phase 12) on Together-hosted open-weight models specifically
+— Qwen and Llama, tying back to the earlier discussion about aligning
+this project with the industry shift toward self-hosted/open-weight
+inference. This is a substantially bigger undertaking than the earlier
+"minimum to show someone" framing — most of the actual headline
+deliverable, not a light next step — so scoped it deliberately rather
+than just diving in.
+
+**Retrieval dropped from the component set.** Decided to do 5 (later 4,
+see below) of the README's 6 components rather than all 6, and cut
+retrieval specifically — it was the most troubled component all session
+(three real bugs: a random-Wikipedia corpus that returned near-random
+passages on real GPQA/MATH questions, a Wikipedia rate limit, and a
+MediaWiki API quirk that silently discarded 95% of fetched articles), and
+even after the v2 category-filtered rebuild finished, its relevance was
+never smoke-tested. Implementation: commented out (not deleted) in
+`elicit_task.py` — the `retrieval()` solver, its BM25 helpers
+(`_load_bm25_index`, `_retrieve`), the now-unused `json`/`lru_cache`
+imports, and the two toggle call-sites in `build_solver()`/`elicit()`.
+`use_retrieval`/`retrieval` parameters are left in place but now
+harmless no-ops (verified: passing `retrieval=True` builds a `Task`
+successfully and simply excludes the retrieval step) — kept this way
+deliberately so re-enabling later is a matter of uncommenting, not
+rewiring. A large comment block at the top of the commented section
+explains the decision and exactly what to uncomment.
+
+**The v2 corpus did finish before being shelved, worth recording for the
+record even though it's not being used right now:** 3916 docs (down from
+v1's 5000, since not every category-collected title had a usable
+extract). Contamination check flagged 4 "substantive" hits this time
+(v1 had zero) — read all 4 by hand: 3 were the phrase "mathbb r to
+mathbb r be a function" (generic function-definition boilerplate, "let
+f: R→R be a function," matching a genuine physics article on the
+Ermakov–Lewis invariant) and 1 was "there is no limit on the number of"
+(a coincidental generic English phrase matching an unrelated academy
+article). Same false-alarm pattern as v1's all-digit-shingle hits —
+confirmed clean, not real contamination, but never got to the actual
+relevance spot-check before the scope decision to drop it.
+
+**Real pricing pulled live before estimating anything**, not from
+memory: `openai/gpt-4o-mini` $0.15/$0.60 per 1M in/out (web search,
+confirmed against multiple sources), `together/Qwen/Qwen2.5-7B-Instruct-
+Turbo` $0.30/$0.30, `together/meta-llama/Llama-3.1-8B-Instruct-Turbo`
+$0.18/$0.18 (both via Together's own `/v1/models` API — same method used
+earlier for the Qwen3.5 pricing check). Picked Llama-3.1-8B specifically
+as the size-matched pairing with Qwen's 7B, to avoid confounding "model
+family" with "model size" on top of the already-flagged cross-family (vs.
+Phase 12's originally-designed same-family) caveat.
+
+**Cost model: real anchors + a flagged estimate for untested components.**
+Qwen2.5-7B's own real MATH data gave two genuine anchors: `cot` alone
+measured 174 input / 829 output tokens/sample; `cot+critique` measured
+3336 input / 1725 output tokens/sample — a real, measured jump showing
+that each additional turn re-sends the *entire* prior conversation as
+input, so cost compounds with stacked components, not just adds linearly.
+Built a small turn-based cost model calibrated to that real pattern
+(830 output tokens/turn, ~200 tokens fixed prompt overhead per turn) to
+estimate the 4 components that have never actually been run
+(`tool_use`, `planning`, `best_of_n`, `multi_critic`) — explicitly
+flagged as an estimate, not a measurement, with `planning` the most
+trustworthy of the four (its structure — one bounded extra turn — is
+known exactly from the code) and `tool_use`/`multi_critic` the least
+(a real tool round-trip could differ from the 1-turn assumption).
+
+**Decision: drop to 4 components (cut `best_of_n`), keep 5 seeds, keep
+Qwen2.5-7B/Llama-3.1-8B (don't go smaller).** Full reasoning and the
+actual cost/power numbers behind each call:
+
+- *Components, 5→4:* dropping any one component halves the sweep
+  (2⁵=32 → 2⁴=16 configs) regardless of which — so the choice was about
+  which component to cut, not whether cutting helps. Cut `best_of_n` for
+  two independent reasons that both point the same way: (1) its
+  headline property — trading off against budget — can't be
+  demonstrated without Phase 11 (budget axis), which isn't in scope
+  right now, so its most distinguishing feature is structurally
+  unreachable in this study anyway; (2) unlike `planning` (already
+  built) and `critique` (already built and validated), `best_of_n` is
+  the only remaining component with zero code written, needing real
+  new design work (an N-per-budget definition, a diversity check) before
+  it's even buildable. `multi_critic` (also unbuilt) was kept over it
+  specifically because it synergizes with the cross-model plan already
+  in scope — the same-model-vs-different-model critic comparison its own
+  acceptance criteria require becomes cheap once two models already
+  exist for the cross-model piece.
+  Cost at 4 components (`critique`, `tool_use`, `planning`,
+  `multi_critic`), GPQA only, Qwen+Llama combined:
+  **$45.58 at 5 seeds, $27.35 at 3 seeds** — down from 5 components'
+  $119.45 / $71.67.
+
+- *Seeds, 5 vs 3:* tested this against the project's OWN real result
+  rather than a generic power-analysis explanation. GPQA's bare-vs-cot
+  finding (the one clean significant result so far) was p=0.0401 at 5
+  seeds (275 pooled disagreements, 120/155 split) — barely under 0.05.
+  Recomputed the same win/loss ratio scaled to what 3/5 the seeds would
+  likely have produced (165 disagreements, ~72/93 split):
+  **p=0.1192 — would NOT have been significant.** This is the concrete
+  cost of fewer seeds, illustrated on a result this project already has,
+  not a hypothetical: the finding you already found would probably have
+  been missed. Kept 5 seeds.
+
+- *Model size:* checked smaller options live rather than assuming —
+  `Llama-3.2-1B-Instruct` is real and cheap ($0.06/$0.06), but
+  `Qwen2.5-3B-Instruct`/`1.5B-Instruct` showed `$0/$0` pricing on
+  Together, which more likely means they're not available as plain
+  pay-per-token serverless endpoints than that they're actually free —
+  flagged as unverified rather than trusted at face value. More
+  importantly: going smaller reopens the exact headroom-validation risk
+  already paid for once this session for GPQA/MATH (a too-weak model
+  can land near-floor the same way a too-strong one lands at ceiling,
+  and you don't know which without a fresh n=20-40 pilot per model) —
+  and the earlier Qwen3.5-9B lesson (a "smaller"/newer model that turned
+  out extremely verbose and expensive to get clean output from) is
+  direct evidence that model size alone doesn't predict cost or
+  reliability. Kept Qwen2.5-7B / Llama-3.1-8B.
+
+**Final scoped estimate: ~$27-46 for the 4-component Shapley sweep on
+GPQA, Qwen + Llama, 5 seeds** (upper end at 5 seeds, lower end would be
+3 seeds — kept 5 per the power argument above, so **$45.58** is the
+number actually being planned against). This is for GPQA alone — no
+budget axis, no second suite. Time is probably the tighter constraint
+than dollars given this session's actual experience with rate limits and
+interruptions on a much smaller sweep; planning for this to span
+multiple sessions of real wall-clock time, not one sitting.
+
+**Not yet done:** none of `tool_use`, `planning`, `best_of_n`, or
+`multi_critic`'s token-cost assumptions have been checked against a real
+pilot. Recommended next step (not yet executed): a cheap real pilot
+(n=20-40, 1 seed, single-component-on configs only) specifically to
+replace the estimated turn-costs with measured ones before committing
+the full ~$46 / 16-config / 5-seed / 2-model sweep.
+
+---
+
 ## Open item / next entry to add
 
 - [x] Record pooled McNemar p-value: bare vs cot — p=0.0401, significant
@@ -896,20 +1034,15 @@ API budget being free again.
       check. Blocked on the gpt-4o-mini MATH ablation finishing first
       (both need OpenAI API budget, avoiding concurrent pressure after
       the rate-limit incident above).
-- [x] `retrieval` toggle code — DONE: wired into `build_solver()`/
-      `elicit()` via local BM25 lookup (`rank_bm25`), reads from
-      `suites/retrieval_corpus.jsonl`
-- [ ] Retrieval corpus itself — REBUILDING (v2). v1 (random-Wikipedia,
-      5000 docs) was contamination-clean but returned near-random,
-      topically irrelevant passages on real GPQA/MATH questions —
-      confirmed systematic, not a couple of unlucky draws. v2 (Wikipedia
-      category-membership filtering, subject-specific categories) hit and
-      fixed two real bugs (a Wikipedia rate limit, and a MediaWiki
-      extracts-API limit that was silently discarding 95% of fetched
-      articles) — see "retrieval corpus v2" entry above. Rebuild
-      currently in progress; still need the rerun contamination check
-      AND the actual relevance spot-check (10 passages by hand) before
-      trusting it, same bar that caught v1's problem.
+- [x] Retrieval — DROPPED FROM SCOPE (not deleted). v2 corpus finished
+      (3916 docs, contamination check clean after manual review of 4
+      flagged hits — all generic-phrase false alarms, same pattern as
+      v1). But cut from the component set before the relevance
+      spot-check ever happened — see "Scope decision" entry above for
+      why (most troubled component all session, and the study is doing
+      4-5 of 6 components rather than all 6). Code commented out in
+      `elicit_task.py`, not removed; `retrieval`/`use_retrieval` params
+      are now harmless no-ops. Easy to re-enable later if there's time.
 - [x] Phase 7 (`planning`) toggle code — DONE: a genuine separate
       generation turn (not relabeled `chain_of_thought()`), verified
       wiring across all toggle combinations. See "planning component"
@@ -918,3 +1051,18 @@ API budget being free again.
       its own criteria should run on humaneval — blocked on Phase 5's own
       smoke test confirming that suite's Docker/sandbox pipeline first,
       not just on API budget freeing up.
+- [x] Scope decided for the Shapley + cross-model study — see "Scope
+      decision" entry above: 4 components (`critique`, `tool_use`,
+      `planning`, `multi_critic` — `best_of_n` and `retrieval` both
+      cut), 5 seeds, Qwen2.5-7B + Llama-3.1-8B (Together), GPQA only for
+      now. Estimated cost ~$45.58, real pricing pulled live.
+- [ ] `best_of_n` toggle — NOT BUILT, deliberately deferred (needs the
+      budget axis to show its actual value, per the scope decision above)
+- [ ] `multi_critic` toggle — NOT BUILT yet, next component to implement
+- [ ] Pilot the 4 real components (`tool_use`, `planning`, `multi_critic`
+      empirically untested; `best_of_n` excluded) at small scale
+      (n=20-40, 1 seed) to replace the estimated per-component token
+      costs with measured ones before committing to the full ~$46 sweep
+- [ ] Full 4-component (2⁴=16 config) × 5-seed × 2-model Shapley sweep on
+      GPQA — not started; blocked on the components above being built
+      and the pilot validating the cost estimate

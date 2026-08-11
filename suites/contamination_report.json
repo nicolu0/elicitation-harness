@@ -1,5 +1,5 @@
 {
-  "corpus_size": 195,
+  "corpus_size": 3916,
   "shingle_size_words": 8,
   "eval_samples_checked": 1265,
   "suites_checked": [
@@ -7,7 +7,40 @@
     "math",
     "humaneval"
   ],
-  "substantive_hits": [],
+  "substantive_hits": [
+    {
+      "suite": "math",
+      "sample_id": "None",
+      "shingle": "mathbb r to mathbb r be a function",
+      "matched_corpus_docs": [
+        "Ermakov\u2013Lewis invariant"
+      ]
+    },
+    {
+      "suite": "math",
+      "sample_id": "None",
+      "shingle": "mathbb r to mathbb r be a function",
+      "matched_corpus_docs": [
+        "Ermakov\u2013Lewis invariant"
+      ]
+    },
+    {
+      "suite": "math",
+      "sample_id": "None",
+      "shingle": "mathbb r to mathbb r be a function",
+      "matched_corpus_docs": [
+        "Ermakov\u2013Lewis invariant"
+      ]
+    },
+    {
+      "suite": "humaneval",
+      "sample_id": "None",
+      "shingle": "there is no limit on the number of",
+      "matched_corpus_docs": [
+        "International Academy of Quantum Molecular Science"
+      ]
+    }
+  ],
   "generic_numeric_hits": [],
-  "verdict": "CLEAN -- zero substantive shingle overlap"
+  "verdict": "4 substantive shingle overlap(s) -- manual review required"
 }
