@@ -159,6 +159,34 @@ def planning() -> Solver:
     return solve
 
 
+def multi_critic(critic_model: str | None = None) -> Solver:
+    """`multi_critic`: a critic model reviews and revises the primary
+    model's answer -- Inspect's own `self_critique()` already supports an
+    alternate `model=` for exactly this (no need to hand-roll a
+    cross-model critique loop), so this is a thin, documented wrapper
+    around it rather than new solver logic.
+
+    `critic_model=None` (default) means the SAME model critiques its own
+    answer -- behaviorally identical to the existing `critique` toggle.
+    This is deliberate, not a missing feature: Phase 9's own acceptance
+    criteria require comparing same-model-critic vs different-model-critic
+    behavior (the README names judge-benchmark circularity as a real risk
+    for this component), and having `multi_critic(critic_model=None)` and
+    `multi_critic(critic_model="together/...")` both be valid, directly
+    comparable calls is what makes that comparison possible -- it's a
+    parameter change, not two different code paths that might not be
+    apples-to-apples. For the actual 16-config ablation sweep, the
+    critic model is set to "the other model in the pair" (see
+    CRITIC_MODEL in run_ablation.py) so `multi_critic` is a genuine
+    cross-model check there, not accidentally a duplicate of `critique`.
+
+    Note: the default completion template asks for "ANSWER: $ANSWER" on
+    its own line -- matches GPQA's letter_match scorer (the suite this
+    study actually targets); would need a custom completion_template to
+    fit MATH's \\boxed{} format if this ever runs there instead."""
+    return self_critique(model=critic_model)
+
+
 # --------------------------------------------------------------------------
 # Shared solver-building logic (identical across every task type)
 # --------------------------------------------------------------------------
@@ -166,6 +194,7 @@ def planning() -> Solver:
 def build_solver(
     cot: bool, critique: bool, system_prompt: str,
     tool_use: bool = False, use_retrieval: bool = False, use_planning: bool = False,
+    use_multi_critic: bool = False, critic_model: str | None = None,
 ):
     steps = [system_message(system_prompt)]
     # retrieval dropped for now -- see "Retrieval component" comment block
@@ -185,6 +214,8 @@ def build_solver(
     steps.append(generate())
     if critique:
         steps.append(self_critique())
+    if use_multi_critic:
+        steps.append(multi_critic(critic_model))
     return steps
 
 
@@ -714,6 +745,7 @@ ADAPTERS: dict[str, TaskAdapter] = {
 def elicit(
     suite: str = "math", cot: bool = False, critique: bool = False,
     tool_use: bool = False, retrieval: bool = False, planning: bool = False,
+    multi_critic: bool = False, critic_model: str | None = None,
 ):
     if suite not in ADAPTERS:
         raise ValueError(
@@ -726,6 +758,7 @@ def elicit(
         solver=build_solver(
             cot, critique, adapter.system_prompt, tool_use,
             use_retrieval=retrieval, use_planning=planning,
+            use_multi_critic=multi_critic, critic_model=critic_model,
         ),
         scorer=adapter.scorer(),
         sandbox=adapter.sandbox,

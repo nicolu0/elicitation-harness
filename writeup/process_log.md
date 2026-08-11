@@ -975,6 +975,103 @@ the full ~$46 / 16-config / 5-seed / 2-model sweep.
 
 ---
 
+## Phase 9 — `multi_critic` component built, reusing Inspect's own cross-model support
+
+Built while the gpt-4o-mini MATH ablation ran in the background (pure
+code, no API calls, same reasoning as the earlier Phase 5/6/7 work).
+
+Checked Inspect's own `self_critique()` source before writing anything
+custom — it already accepts an alternate `model=` parameter specifically
+for cross-model critique ("you don't need to use the model being
+evaluated"), so `multi_critic` didn't need a hand-rolled solver like
+`planning`/`retrieval` did. It's a thin, documented wrapper:
+`multi_critic(critic_model: str | None = None)` → `self_critique(model=
+critic_model)`. `critic_model=None` means same-model critique
+(behaviorally identical to the existing `critique` toggle) — deliberate,
+not a gap: Phase 9's own acceptance criteria require comparing
+same-model-critic vs different-model-critic behavior, and having both be
+the same function with a different argument is what makes that a clean,
+directly-comparable check rather than two separate code paths. For the
+real ablation sweep, `critic_model` gets set to "the other model in the
+pair," so `multi_critic` is a genuine cross-model check there, not an
+accidental duplicate of `critique`.
+
+Verified without any API calls: builds correctly for both same-model and
+cross-model configs, correct solver step counts (3 for `multi_critic`
+alone, 7 with cot/tool_use/planning/critique/multi_critic all on).
+
+Noted but deliberately NOT touched: `run_ablation.py`'s `MODEL`/`SUITE`/
+`CONFIGS` still reflect the original 2-component (cot/critique) pairwise
+ablation, because that script is the one currently running the live
+Phase 4 gpt-4o-mini MATH-vs-GPQA comparison in the background. Editing it
+now risks corrupting a future restart of that in-flight work (checkpoint
+resume depends on the file staying as-is). The 16-config Shapley sweep
+needs its own script — not yet written.
+
+## Phase 12 — Second model selection: Llama-3.1-8B inaccessible, replaced with gemma-3n-E4B-it
+
+Attempted the planned GPQA headroom pilot for the locked-in model pair
+(Qwen2.5-7B + Llama-3.1-8B-Instruct-Turbo) — this suite-specific check
+was itself overdue: Qwen2.5-7B had only ever been validated on MATH this
+session, never GPQA, which is the suite the actual study targets.
+
+**Qwen2.5-7B on GPQA: clean.** n=40, bare, accuracy=0.350 — good
+headroom, consistent with gpt-4o-mini's GPQA range all session, no
+ceiling/floor concern.
+
+**Llama-3.1-8B-Instruct-Turbo: inaccessible.** `NotFoundError` (404,
+`model_not_available`) on the very first call, despite showing valid
+pricing in Together's `/v1/models` listing when checked earlier —
+confirmed here that pricing-list presence does NOT mean inference
+access; these are two different checks and only one had been done.
+Tried every other Llama size/variant available on the account (8B in
+multiple naming forms, 70B in two forms, 3B, 1B) — **only
+`Llama-3.3-70B-Instruct-Turbo` actually works for inference.** No
+distinguishing field in the API response explained the pattern; this
+looks like an account-level serverless-tier restriction on Together's
+side, not something fixable in code.
+
+**Reopened the same-family-vs-cross-scale tradeoff this design was
+built to avoid** — using the 70B model would confound family and scale
+again, the exact problem the original small-pair decision was meant to
+prevent. Screened alternatives from the account's actual available-model
+list instead of assuming Llama was the only option, since the user
+confirmed company/brand doesn't matter, only behavior:
+
+| model | n | accuracy | avg out tok/sample | no-answer rate |
+|---|---|---|---|---|
+| `gpt-oss-20b` | 30 | 0.533 | 1133 | **9/30 (30%)** |
+| `gemma-3n-E4B-it` | 30 | 0.400 | 5 | 0/30 |
+
+(`LFM2.5-8B-A1B` and `gemma-4-31B-it` were screened out earlier at n=2 on
+output-token volume alone — 1925 and 1417 tokens/sample respectively,
+both in the range that had flagged trouble before — and not pursued
+further.)
+
+`gpt-oss-20b`'s higher raw accuracy is misleading: **30% of bare-condition
+samples never produced a parseable answer** — the identical failure
+signature already seen and rejected once this session with Qwen3.5-9B (a
+reasoning-heavy model that burns output budget without reliably
+terminating in the expected format). Ruled out despite the better
+headline number, same reasoning as before: an unreliable answer format
+corrupts the measurement more than a few points of accuracy matters.
+
+`gemma-3n-E4B-it` was clean on every axis: real headroom (0.400, matches
+the range other models have landed in on GPQA all session), essentially
+zero verbosity (5 output tokens/sample in the bare condition — the model
+just states a letter), and **zero** answer-format failures across 30
+samples. Also cheaper than the original Llama-3.1-8B plan ($0.06/$0.12
+vs $0.18/$0.18 per 1M tokens), so the existing ~$45.58 cost estimate
+goes down, not up, with this substitution.
+
+**Locked in: Qwen2.5-7B-Instruct-Turbo + `together/google/gemma-3n-E4B-
+it`.** Both validated on GPQA specifically now, not carried over from
+MATH validation. README and phases.md updated to replace the stale
+Llama-3.1-8B references (Findings section placeholder, Phase 12,
+Phase 3's feasibility-estimate note).
+
+---
+
 ## Open item / next entry to add
 
 - [x] Record pooled McNemar p-value: bare vs cot — p=0.0401, significant
@@ -1054,15 +1151,28 @@ the full ~$46 / 16-config / 5-seed / 2-model sweep.
 - [x] Scope decided for the Shapley + cross-model study — see "Scope
       decision" entry above: 4 components (`critique`, `tool_use`,
       `planning`, `multi_critic` — `best_of_n` and `retrieval` both
-      cut), 5 seeds, Qwen2.5-7B + Llama-3.1-8B (Together), GPQA only for
-      now. Estimated cost ~$45.58, real pricing pulled live.
+      cut), 5 seeds, GPQA only for now.
+- [x] Second model locked in: Qwen2.5-7B-Instruct-Turbo +
+      `together/google/gemma-3n-E4B-it` (NOT Llama-3.1-8B — inaccessible
+      on this Together account, see "Second model selection" entry
+      above). Both validated on GPQA specifically (n=30-40). Estimated
+      cost ~$45.58 or lower (gemma-3n-E4B-it is cheaper than the
+      original Llama-3.1-8B pricing assumption).
 - [ ] `best_of_n` toggle — NOT BUILT, deliberately deferred (needs the
       budget axis to show its actual value, per the scope decision above)
-- [ ] `multi_critic` toggle — NOT BUILT yet, next component to implement
+- [x] `multi_critic` toggle — BUILT (thin wrapper around Inspect's own
+      `self_critique(model=...)`, see "Phase 9" entry above). All 4
+      in-scope components now exist in `elicit_task.py`.
 - [ ] Pilot the 4 real components (`tool_use`, `planning`, `multi_critic`
-      empirically untested; `best_of_n` excluded) at small scale
-      (n=20-40, 1 seed) to replace the estimated per-component token
-      costs with measured ones before committing to the full ~$46 sweep
+      empirically untested; `critique` already has real data) at small
+      scale (n=20-40, 1 seed, on the locked-in models) to replace the
+      estimated per-component token costs with measured ones before
+      committing to the full sweep
+- [ ] A dedicated sweep-runner script for the 16-config × 5-seed ×
+      2-model Shapley study — not yet written. Deliberately NOT added to
+      `run_ablation.py`, which is currently running the live Phase 4
+      gpt-4o-mini MATH-vs-GPQA comparison; needs its own script so
+      editing it can't corrupt that in-flight work's checkpoint resume.
 - [ ] Full 4-component (2⁴=16 config) × 5-seed × 2-model Shapley sweep on
-      GPQA — not started; blocked on the components above being built
-      and the pilot validating the cost estimate
+      GPQA — not started; blocked on the pilot above and the new runner
+      script

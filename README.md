@@ -142,7 +142,7 @@ class Component(Protocol):
 
 **Substitution with budget.** `[best_of_n / planning]` contributes `[+X at low budget and roughly nothing at high budget]`, while `[tool_use]` holds steady at `[+Y]` across the whole range. Read that as: `[best-of-N]` mostly buys what extra compute would have bought you anyway, and `[tool use]` buys something compute can't.
 
-**Transfer across models.** The component rankings correlate at `[ρ = 0.?]` between `[Qwen2.5-7B]` and `[Llama-3.1-8B]` — similar scale, different families, so this measures whether attribution generalizes across model families rather than across model size within one family. `[If that number is low:]` the same fixed harness leaves `[Z points]` more on the table for `[one model]` than for `[the other]`, which means a fixed harness comparison is `[tilted toward / against]` one family in a way that running more seeds won't fix.
+**Transfer across models.** The component rankings correlate at `[ρ = 0.?]` between `[Qwen2.5-7B]` and `[Gemma-3n-E4B]` — similar scale, different families, so this measures whether attribution generalizes across model families rather than across model size within one family. `[If that number is low:]` the same fixed harness leaves `[Z points]` more on the table for `[one model]` than for `[the other]`, which means a fixed harness comparison is `[tilted toward / against]` one family in a way that running more seeds won't fix.
 
 **Flipped comparisons.** With a `[low budget standardized]` harness, `[A beats B]`. With `[max effort elicitation]`, `[B beats A]`. Same models and same tasks, opposite verdict, decided by a harness choice that usually doesn't make it into the writeup.
 
