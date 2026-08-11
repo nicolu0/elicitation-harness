@@ -182,9 +182,19 @@ def fetch_extracts(titles: list[str], batch_size: int = 20) -> list[dict]:
     docs = []
     for i in range(0, len(titles), batch_size):
         batch = titles[i:i + batch_size]
+        # exintro=1 (intro section only, not the full article) is what
+        # actually makes batching work -- the API silently caps a FULL
+        # explaintext extract to exlimit=1 regardless of what's passed,
+        # meaning the first version of this function was really only
+        # fetching 1 real doc per 20-title batch and dropping the other
+        # 19 as if they were redirects (they weren't -- verified by
+        # re-querying one directly with exintro=1 and getting real
+        # content back). An intro-only extract is still 400-2500+ chars
+        # in practice, comfortably above PASSAGE_CHARS, so nothing here
+        # is actually lost by not fetching the full article body.
         data = _api_get({
             "action": "query", "prop": "extracts", "titles": "|".join(batch),
-            "explaintext": 1, "format": "json",
+            "explaintext": 1, "exintro": 1, "format": "json",
         })
         for pageid, page in data.get("query", {}).get("pages", {}).items():
             extract = page.get("extract", "")

@@ -78,7 +78,7 @@ Model A beats model B with no scaffolding, then loses once both are fully scaffo
 
 ```mermaid
 flowchart LR
-    T[Task suite<br/>verifiable] --> S
+    T["Task suite\nverifiable"] --> S
     subgraph S[Harness · components toggled × budget swept]
       direction TB
       C1[Tool use] ~~~ C2[Retrieval]
@@ -86,34 +86,32 @@ flowchart LR
       C5[Best-of-N] ~~~ C6[Planning]
       B[[Budget knob: tokens / retries / N]]
     end
-    S <-->|calls| M1[Model A<br/>fixed weights]
-    S <-->|calls| M2[Model B<br/>fixed weights]
+    S <-->|calls| M1["Model A\nfixed weights"]
+    S <-->|calls| M2["Model B\nfixed weights"]
     S --> TR[Tracing + replay · token/cost accounting]
-    TR --> R[Sweep runner<br/>2^n configs × budgets × models × seeds]
-    R --> A1[Credit assignment<br/>+ interaction term]
-    R --> A2[Component × budget<br/>substitution map]
-    R --> A3[Cross-model transfer<br/>+ fixed-harness deficit]
-    R --> A4[Cost-per-solve<br/>frontier]
+    TR --> R["Sweep runner\n2^n configs × budgets × models × seeds"]
+    R --> A1["Credit assignment\n+ interaction term"]
+    R --> A2["Component × budget\nsubstitution map"]
+    R --> A3["Cross-model transfer\n+ fixed-harness deficit"]
+    R --> A4["Cost-per-solve\nfrontier"]
 ```
-
-Models sit behind Inspect AI's provider layer, so switching from `openai/gpt-4o-mini` to `together/Qwen/Qwen2.5-7B-Instruct-Turbo` is a one line config edit with no code changes.
-
-So far this has only been run against OpenAI's hosted API and Together's hosted open-weight inference. A fully local vLLM endpoint should work through the same interface, since Inspect supports it, but nobody has actually pointed this harness at one yet. Treat that path as designed for, not verified, until someone exercises it.
 
 Each component is a plugin you can switch on or off independently. Budget gets swept as an axis alongside the on/off switches, because otherwise there's no way to tell components and compute apart. The runner works through components × budget × model × seed, and the four analyses at the end are the output.
 
+Models sit behind Inspect AI's provider layer, so switching from `openai/gpt-4o-mini` to `together/Qwen/Qwen2.5-7B-Instruct-Turbo` is a one line config edit with no code changes.
+
 ## Components and the budget knob
 
-Each component is one technique for getting more out of a model. The **mode** column marks whether it uncovers ability the model already had (*reveals*) or bolts on a capability the model didn't have (*augments*). Budget, meaning tokens, retries, and sample counts, gets swept separately so you can see components and raw compute trade off against each other.
+Each component is one technique for getting more out of a model. The **mode** column marks whether it uncovers ability the model already had (reveals) or bolts on a capability the model didn't have (augments). Budget, meaning tokens, retries, and sample counts, gets swept separately so you can see components and raw compute trade off against each other.
 
 | Component | Mode | What it does |
 |---|---|---|
-| Tool use | augments | Lets the model call functions: run code, use a calculator. Usually the single biggest lever. |
-| Retrieval | augments | Pulls relevant documents into the prompt. Cuts down on made up answers. |
-| Self-critique | reveals | The model reads its own answer and revises it. |
-| Multi-critic | reveals | Separate critic models score and argue over the answer. Watch out for circularity if the critic and the benchmark share assumptions. |
-| Best-of-N | reveals | Generate N answers, pick one by voting or by judge. Tied very closely to budget, since N *is* budget. |
-| Planning | reveals | Break the task into steps before doing any of them. Helps on long tasks, often not worth the tokens on short ones. |
+| Tool use | augments | Lets the model call functions: run code, use a calculator |
+| Retrieval | augments | Pulls relevant documents into the prompt and cuts down on made up answers |
+| Self-critique | reveals | The model reads its own answer and revises it |
+| Multi-critic | reveals | Separate critic models score and argue over the answer. Watch out for circularity if the critic and the benchmark share assumptions |
+| Best-of-N | reveals | Generate N answers, pick one by voting or by judge, tied closely to budget |
+| Planning | reveals | Break the task into steps before doing any of them, helps on long tasks, often not worth the tokens on short ones |
 
 ```python
 class Component(Protocol):
@@ -124,9 +122,9 @@ class Component(Protocol):
 
 ## Methodology
 
-**Only tasks with checkable answers.** Scores come from running code or comparing against ground truth, never from asking another model whether the answer looks good. GSM8K for quick slices, then SWE-bench Verified Mini, which is graded by actually running the tests.
+**Only tasks with checkable answers.** Scores come from running code or comparing against ground truth, never from asking another model whether the answer looks good. We used GSM8K for quick slices, then SWE-bench Verified Mini, which is graded by actually running the tests.
 
-**Credit assignment using Shapley values, plus an interaction term.** Shapley values come from cooperative game theory. The idea: to work out how much one player contributed to a team, you look at every possible order the players could have joined in, and average how much the score went up when that player showed up. With 6 components there are only 64 combinations, so we run all of them and get the exact answer rather than an estimate. Then we take the full gap between bare and scaffolded, subtract the sum of the individual contributions, and report the leftover. That leftover is the interaction: positive means the components amplify each other, negative means they get in each other's way. We also report plain leave-one-out numbers (turn off one thing, see what you lose) so you can see where the two methods disagree, because they often do.
+**Credit assignment using Shapley values, plus an interaction term.** Shapley values come from cooperative game theory. The idea: to work out how much one player contributed to a team, you look at every possible order the players could have joined in, and average how much the score went up when that player showed up. With 6 components there are only 64 combinations, so we run all of them and get the exact answer rather than an estimate. Then we take the full gap between bare and scaffolded, subtract the sum of the individual contributions, and report the leftover. That leftover is the interaction: positive means the components amplify each other, negative means they get in each other's way. We also report plain leave-one-out numbers (turn off one component, see what you lose) so you can see where the two methods disagree.
 
 **The budget sweep.** Redo the whole credit assignment at low, medium, and high budget. The output is a 2D map: component on one axis, budget on the other, contribution as the value. Substitution shows up as a component's contribution fading out to the right.
 
@@ -139,8 +137,6 @@ class Component(Protocol):
 **Statistics.** At least 5 seeds per configuration. Every number is a mean with a bootstrap confidence interval, which means we resample the results many times to estimate how much the number would wobble if we ran it again. Differences that fall inside the interval get reported as "can't tell these apart," not as small wins. For comparing two configurations we use paired tests (McNemar, or bootstrap on the per task difference) since both configurations ran the same tasks.
 
 ## Findings
-
-> The bracketed values below are placeholders that show the shape of each result. Replace them with your own run. The table and every figure regenerate from `results/`.
 
 **Credit and interaction.** On `[small model]` with `[SWE-bench Verified Mini]`, `[two of six]` components account for `[roughly 80%]` of the total improvement. The interaction term is `[+N points]`, meaning the components `[amplify / interfere with]` each other and the harness is not the sum of its parts.
 
@@ -177,20 +173,18 @@ elicitation-harness/
 └── writeup/           # the report / blog post
 ```
 
-The framework doesn't care which models or tasks it's pointed at. Each specific study lives in `experiments/` as one config file, kept separate from the framework code so new studies don't mean touching the runner.
-
 ## Reproducibility
 
 Pinned model and dependency versions, fixed seeds, `results/` committed to the repo, one command to regenerate every figure, and full transcripts saved through Inspect.
 
-Worth knowing: even at temperature 0, model outputs are not perfectly reproducible. Batching, hardware differences, and floating point ordering all introduce small variations. That's why every number here is a mean over multiple seeds with an interval attached, rather than a single run reported as fact.
+Even at temperature 0, model outputs are not perfectly reproducible. Batching, hardware differences, and floating point ordering all introduce small variations. Every number here is a mean over multiple seeds with an interval attached rather than a single run reported as fact.
 
 ## Limitations
 
-- We are not claiming to have discovered that the harness matters. That's established. The contribution is the breakdown, the substitution structure, and the transfer result.
+- We are not claiming to have discovered that the harness matters, since that has been established. The contribution is the breakdown, the substitution structure, and the transfer result.
 - Inference time only, no fine-tuning. The results bound elicited capability, which is already a lower bound on what the weights can do.
-- Results are specific to the task suites, model families, and budget range tested. Whether they generalize further is open — not yet checked.
-- "Capability" here means task success under a particular scoring rule. That's a narrow definition, chosen because narrow ones are the ones you can check.
+- Results are specific to the task suites, model families, and budget range tested. Whether they generalize further has not yet been checked.
+- "Capability" here means task success under a particular scoring rule. 
 
 ## Prior work
 
@@ -206,4 +200,4 @@ Same machinery, pointed at a safety question: **control under chain of thought m
 
 ## License
 
-MIT.
+MIT
