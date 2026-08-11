@@ -40,6 +40,7 @@ from functools import lru_cache
 from inspect_ai import Task, task
 from inspect_ai.dataset import Dataset, Sample, hf_dataset
 from inspect_ai.scorer import Score, Scorer, Target, scorer, accuracy, stderr
+from inspect_ai.model import ChatMessageUser
 from inspect_ai.solver import (
     Generate,
     Solver,
@@ -111,17 +112,54 @@ def retrieval() -> Solver:
     return solve
 
 
+PLANNING_PROMPT = (
+    "Before answering, break this problem down into a short numbered "
+    "list of concrete steps needed to solve it. Output ONLY the "
+    "numbered plan -- do not solve the problem yet."
+)
+
+
+@solver
+def planning() -> Solver:
+    """Decompose-then-execute: a genuinely separate generation turn that
+    asks for a numbered plan FIRST, before the main answer -- not just
+    chain_of_thought() under a different name (which reasons and answers
+    in a single pass with no distinct, inspectable planning artifact).
+
+    Implementation choice, and why: the plan is added as a REAL prior
+    conversation turn (append a user message asking for a plan, call
+    generate() to get it, which appends the assistant's plan response to
+    state.messages) rather than manually splicing plan text into the
+    prompt the way retrieval() does. This matters for Phase 7's own smoke
+    test criteria: with the plan as a real turn, a transcript reviewer can
+    directly see (a) whether the plan differs per question by reading the
+    assistant's plan-turn response, and (b) whether the final answer
+    actually references the plan, since it's genuinely earlier
+    conversation history the model has access to during the main
+    generate() step that follows -- not an inference from prompt text
+    that was never actually part of the exchange."""
+
+    async def solve(state: TaskState, generate: Generate) -> TaskState:
+        state.messages.append(ChatMessageUser(content=PLANNING_PROMPT))
+        state = await generate(state)
+        return state
+
+    return solve
+
+
 # --------------------------------------------------------------------------
 # Shared solver-building logic (identical across every task type)
 # --------------------------------------------------------------------------
 
 def build_solver(
     cot: bool, critique: bool, system_prompt: str,
-    tool_use: bool = False, use_retrieval: bool = False,
+    tool_use: bool = False, use_retrieval: bool = False, use_planning: bool = False,
 ):
     steps = [system_message(system_prompt)]
     if use_retrieval:
         steps.append(retrieval())
+    if use_planning:
+        steps.append(planning())
     if cot:
         steps.append(chain_of_thought())
     if tool_use:
@@ -660,7 +698,7 @@ ADAPTERS: dict[str, TaskAdapter] = {
 @task
 def elicit(
     suite: str = "math", cot: bool = False, critique: bool = False,
-    tool_use: bool = False, retrieval: bool = False,
+    tool_use: bool = False, retrieval: bool = False, planning: bool = False,
 ):
     if suite not in ADAPTERS:
         raise ValueError(
@@ -672,7 +710,7 @@ def elicit(
         dataset=adapter.load(),
         solver=build_solver(
             cot, critique, adapter.system_prompt, tool_use,
-            use_retrieval=retrieval,
+            use_retrieval=retrieval, use_planning=planning,
         ),
         scorer=adapter.scorer(),
         sandbox=adapter.sandbox,

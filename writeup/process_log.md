@@ -735,6 +735,108 @@ deferred until the API isn't tied up with the MATH ablation:
 
 ---
 
+## Phase 6 — retrieval corpus v2: two real bugs in the Wikipedia category-fetch pipeline
+
+Rebuilding `suites/retrieval_corpus.jsonl` via Wikipedia category
+membership (per the decision in the prior entry) instead of a random
+sample. Design: subject-specific categories (e.g. `Category:Quantum
+mechanics`, not the broad `Category:Physics`, which mostly contains
+biographical/institutional subcategories rather than concepts), one
+level of subcategory recursion with an exclude-pattern filter
+(`people`, `by country`, `list of`, etc.), capped at `MAX_TITLES=4000`
+candidate article titles, then article text fetched directly from
+Wikipedia's own API (`action=query&prop=extracts`) rather than by
+streaming/filtering the full 6.4M-article HF `wikimedia/wikipedia` dump
+by title (would require scanning a large fraction of the dump to find a
+comparatively small target set).
+
+**Bug 1 — Wikipedia's own rate limit.** First run hit `429 Too Many
+Requests` on the very first category, partway through subcategory
+traversal. Root cause: pacing (a `time.sleep`) only existed in the
+extract-fetching loop, not in the category-traversal calls, which fan
+out into far more requests per category than extraction does (each
+category can have dozens of subcategories, each needing its own API
+call). Fix: centralized ALL Wikipedia API calls through one `_api_get()`
+function with built-in 429 handling (respects `Retry-After` if present,
+exponential fallback otherwise, up to 6 attempts) and steady baseline
+pacing — covers category traversal and extraction alike, rather than
+requiring pacing to be re-added at every call site individually.
+
+**Bug 2 — a MediaWiki API limit that silently discarded 95% of
+articles.** After fixing the rate limit, the run completed but produced
+only 195 docs from 4000 candidate titles — a loss rate far too high to
+be genuine redirects/missing pages. Investigated rather than accepting
+it: the API returns a warning (easy to miss without printing it
+explicitly, which the original code didn't) —
+`"exlimit" was too large for a whole article extracts request, lowered
+to 1"` — meaning a FULL-article `explaintext` extract silently caps
+`exlimit` to 1 regardless of what's requested, so each 20-title batch
+was really only fetching 1 real article and treating the other 19 as if
+they'd failed. Confirmed by re-querying one of the "failed" titles
+directly and getting real content back. Fix: added `exintro=1` (intro
+section only, not the full article body) to the extract request, which
+batches cleanly with no limit warning — verified on a 4-title test batch,
+all 4 returned real content (471–2322 chars each, comfortably above the
+1500-char `PASSAGE_CHARS` truncation already in place, so nothing is
+actually lost by not fetching full articles). This also explains most of
+Bug 1's excess request volume: with only 1 real doc per batch, far more
+round-trips were needed for the same yield than intended.
+
+**Status: rebuild relaunched with both fixes, in progress** (interrupted
+once more mid-run by the same laptop-sleep issue documented in the Phase
+4 entry — relaunched again, no checkpointing on this script yet since
+each run is short enough that a full restart is cheap, unlike the
+multi-hour ablation). Will log final corpus size and the rerun
+contamination-check verdict once it completes.
+
+## Phase 7 — planning component: code implemented
+
+Built the `planning` toggle's code while the MATH ablation and corpus
+rebuild both continued in the background — pure code, zero API calls,
+same reasoning as the earlier Phase 5/6 setup work.
+
+**Design: a genuinely separate generation turn, not a relabeled
+`chain_of_thought()`.** phases.md's own Phase 7 criteria specifically
+warns against that shortcut. Implementation: `planning()` appends a
+`ChatMessageUser` asking for a short numbered plan (`PLANNING_PROMPT`,
+"output ONLY the numbered plan, do not solve yet"), then calls Inspect's
+`generate()` directly inside the solver — which appends the resulting
+plan as a real assistant turn to `state.messages` — before the main
+`generate()` step (already in `build_solver()`'s pipeline) runs.
+
+Chose this over the approach `retrieval()` uses (splicing text into
+`state.user_prompt.text`) specifically because Phase 7's smoke test needs
+to verify two things from transcripts: (a) plans differ per question, and
+(b) the final answer actually references the plan. With the plan as a
+real prior conversation turn, both are directly readable from any
+transcript viewer (Inspect's own `inspect view`, or `read_eval_log`) —
+the plan is literally an earlier turn the model can see when generating
+its answer, not something to infer indirectly from prompt text that was
+never actually part of the exchange.
+
+Naming note: `build_solver()`'s parameter is `use_planning`, not
+`planning` — mirrors the earlier `use_retrieval`/`retrieval()` pattern,
+avoiding a parameter shadowing the module-level solver function of the
+same name inside the function body (hit this exact issue once already
+while writing it, first draft used `globals()["planning"]()` as an ugly
+workaround before renaming the parameter instead).
+
+**Verified without any API calls:** `elicit(suite="humaneval",
+tool_use=True, planning=True)` builds correctly; solver step counts are
+right for every toggle combination tested (3 steps for `planning` alone:
+system message, planning turn, generate; 7 steps with every toggle on).
+
+**Not yet done, per Phase 7's own criteria — needs real model calls, and
+per the phase's stated design should run on humaneval specifically:**
+the n=20 smoke test (confirm plans genuinely differ per question, confirm
+the final answer references the plan, not just that the code runs), and
+the full ablation once Phase 5's own humaneval/Docker smoke test has
+independently confirmed that pipeline works — planning's empirical
+validation depends on that suite already being validated, not just on
+API budget being free again.
+
+---
+
 ## Open item / next entry to add
 
 - [x] Record pooled McNemar p-value: bare vs cot — p=0.0401, significant
@@ -768,10 +870,11 @@ deferred until the API isn't tied up with the MATH ablation:
       and the 7-subject headroom comparison (rankings probably still
       hold, absolute numbers don't)
 - [ ] Re-run the MATH ablation on `openai/gpt-4o-mini` with the fixed
-      prompt — IN PROGRESS (4th launch attempt, checkpointing now added
-      to `run_ablation.py` after 3 prior interruptions — see "gpt-4o-mini
-      MATH ablation" entry above for the full saga). First checkpoint
-      written (`bare` seed 1 = 0.244); not yet complete.
+      prompt — IN PROGRESS (5th launch attempt after another sleep
+      interruption; checkpointing means each interruption now only costs
+      the seed in flight, not everything before it — see "gpt-4o-mini
+      MATH ablation" entry above). Checkpoint as of last check: `bare`
+      seeds 1-2 done (0.244, 0.230); not yet complete.
 - [ ] GPQA still has no false-positive check at all (only the
       system-prompt bug and the CoT-leak fix have been examined) — run
       `spot_check.py` against a GPQA log before treating GPQA's numbers
@@ -793,20 +896,25 @@ deferred until the API isn't tied up with the MATH ablation:
       check. Blocked on the gpt-4o-mini MATH ablation finishing first
       (both need OpenAI API budget, avoiding concurrent pressure after
       the rate-limit incident above).
-- [ ] Phase 6 (retrieval) setup started: built a 5000-doc random-Wikipedia
-      corpus (`build_retrieval_corpus.py`, `suites/retrieval_corpus.jsonl`)
-      with a shingle-overlap contamination check (`suites/
-      contamination_report.json` — clean, 21 generic all-digit-shingle
-      false alarms correctly excluded) and wired a `retrieval` toggle
-      into `build_solver()`/`elicit()` via local BM25 lookup
-      (`rank_bm25`). BUT: spot-checked retrieval quality against real
-      GPQA/MATH questions and found the random-Wikipedia corpus returns
-      near-random, topically irrelevant passages (e.g. "Toyota Group" for
-      a quantum mechanics question) — confirmed this is systematic, not
-      a couple of unlucky draws. Decision made but not yet executed:
-      rebuild the corpus via Wikipedia category-membership filtering
-      (verified working via the MediaWiki API, e.g. `Category:Quantum
-      mechanics` returns real on-topic titles) instead of a random
-      sample, keeping the same pre-gather-once/check-once/retrieve-
-      locally architecture and rerunning the same contamination check
-      against the new corpus before trusting it.
+- [x] `retrieval` toggle code — DONE: wired into `build_solver()`/
+      `elicit()` via local BM25 lookup (`rank_bm25`), reads from
+      `suites/retrieval_corpus.jsonl`
+- [ ] Retrieval corpus itself — REBUILDING (v2). v1 (random-Wikipedia,
+      5000 docs) was contamination-clean but returned near-random,
+      topically irrelevant passages on real GPQA/MATH questions —
+      confirmed systematic, not a couple of unlucky draws. v2 (Wikipedia
+      category-membership filtering, subject-specific categories) hit and
+      fixed two real bugs (a Wikipedia rate limit, and a MediaWiki
+      extracts-API limit that was silently discarding 95% of fetched
+      articles) — see "retrieval corpus v2" entry above. Rebuild
+      currently in progress; still need the rerun contamination check
+      AND the actual relevance spot-check (10 passages by hand) before
+      trusting it, same bar that caught v1's problem.
+- [x] Phase 7 (`planning`) toggle code — DONE: a genuine separate
+      generation turn (not relabeled `chain_of_thought()`), verified
+      wiring across all toggle combinations. See "planning component"
+      entry above.
+- [ ] Phase 7 empirical steps — NOT DONE: needs real model calls, and per
+      its own criteria should run on humaneval — blocked on Phase 5's own
+      smoke test confirming that suite's Docker/sandbox pipeline first,
+      not just on API budget freeing up.
