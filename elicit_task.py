@@ -116,17 +116,50 @@ def _extract_boxed(text: str) -> str | None:
     return text[start : i - 1].strip() if depth == 0 else None
 
 
+# Matches one \frac/\sqrt argument: a {...} group, a \command (optionally
+# with its own {...} group, e.g. \sqrt{7}), or a single bare character.
+_FRAC_ARG = r"(\{[^{}]*\}|\\[a-zA-Z]+(?:\{[^{}]*\})?|[^\s{}])"
+
+
+def _brace_frac_sqrt_args(s: str) -> str:
+    """Normalize brace-less \\frac / \\sqrt shorthand into the fully-braced
+    canonical form: \\frac56 / \\frac 56 / \\frac9{5} -> \\frac{9}{5},
+    \\sqrt7 -> \\sqrt{7}. Found in real MATH transcripts (both styles are
+    used interchangeably by the dataset and are never meaningfully
+    different) -- without this, two answers that are byte-for-byte the same
+    once rendered were failing both the string and sympy comparison because
+    the sympy fallback below only recognizes the fully-braced form."""
+    prev = None
+    while prev != s:
+        prev = s
+        s = re.sub(r"\\sqrt(?!\{)(\d)", r"\\sqrt{\1}", s)
+
+        def _wrap(m: re.Match) -> str:
+            a, b = m.group(1), m.group(2)
+            a = a if a.startswith("{") else "{%s}" % a
+            b = b if b.startswith("{") else "{%s}" % b
+            return "\\frac%s%s" % (a, b)
+
+        s = re.sub(r"\\frac\s*" + _FRAC_ARG + r"\s*" + _FRAC_ARG, _wrap, s)
+    return s
+
+
 def _clean_latex(ans: str) -> str:
     """Normalize superficial LaTeX/formatting differences that don't change
-    meaning: \\dfrac/\\tfrac -> \\frac, \\left \\right removed, spacing
-    commands removed, a leading "x \\in " / "x = " variable prefix
+    meaning: \\dfrac/\\tfrac -> \\frac, brace-less \\frac/\\sqrt shorthand
+    braced, \\left \\right removed, spacing commands removed, a leading
+    "x \\in " / "x = " variable prefix stripped, a literal \\$ (currency)
     stripped, whitespace collapsed, trailing period and $ removed."""
     s = ans.strip()
     s = re.sub(r"\\d?frac", r"\\frac", s)          # \dfrac, \tfrac -> \frac
+    s = _brace_frac_sqrt_args(s)
     s = s.replace("\\left", "").replace("\\right", "")
     s = re.sub(r"\\[,;:!]", "", s)                  # LaTeX spacing commands
     s = re.sub(r"^[a-zA-Z]\s*(\\in|=)\s*", "", s)   # "x \in ", "x = " prefix
-    s = s.replace("$", "").rstrip(".").strip()
+    # NOTE: strip "\$" (escaped currency dollar) before the bare "$" strip
+    # below -- doing only the bare strip turns "\$40" into the broken "\40"
+    # (dangling backslash) instead of "40", which was a real false negative.
+    s = s.replace("\\$", "").replace("$", "").rstrip(".").strip()
     s = re.sub(r"\s+", "", s)
     return s
 
@@ -134,25 +167,47 @@ def _clean_latex(ans: str) -> str:
 def _sympy_equivalent(a: str, b: str) -> bool | None:
     """Try to parse both answers as math expressions and check exact
     symbolic/numeric equivalence (catches \\frac{9}{7} == 9/7 == 1.2857...,
-    \\frac{11}{2} == 5.5, etc). Returns None if sympy isn't installed or
-    either side fails to parse -- caller should fall back to string match
-    in that case, not treat None as "not equal"."""
+    \\frac{11}{2} == 5.5, 7(x-3)(x+3) == 7(x+3)(x-3), x^{9} == x^9, ordered
+    pairs like (1, 4.5) == (1, \\frac{9}{2}), etc). Returns None if sympy
+    isn't installed or either side fails to parse -- caller should fall
+    back to string match in that case, not treat None as "not equal"."""
     try:
         from sympy import sympify, simplify
         from sympy.parsing.latex import parse_latex
+        from sympy.parsing.sympy_parser import (
+            parse_expr,
+            standard_transformations,
+            implicit_multiplication_application,
+            convert_xor,
+        )
     except ImportError:
         return None
 
+    # Plain sympify() rejects "7(x-3)(x+3)" (implicit multiplication) and
+    # treats bare "^" as XOR rather than power -- both are valid MATH answer
+    # styles. This transform set is sympy's own tolerant parser for exactly
+    # that, used as a last-resort tier below (never as the first attempt,
+    # since a more permissive parser is more likely to mis-parse ambiguous
+    # input into *something* rather than failing loudly).
+    TOLERANT = standard_transformations + (
+        implicit_multiplication_application,
+        convert_xor,
+    )
+
     def _latex_to_sympy_str(s: str) -> str:
-        """Manual \\frac{a}{b} -> (a)/(b), \\sqrt{x} -> sqrt(x) conversion,
-        used when the optional antlr4 LaTeX parser isn't installed. Handles
-        one level of nesting, which covers the vast majority of MATH
-        dataset answers (e.g. \\frac{11}{2}, \\frac{1}{\\sqrt{2}})."""
+        """Manual \\frac{a}{b} -> (a)/(b), \\sqrt{x} -> sqrt(x), x^{9} ->
+        x^(9) conversion, used when the optional antlr4 LaTeX parser isn't
+        installed. Handles one level of nesting, which covers the vast
+        majority of MATH dataset answers (e.g. \\frac{11}{2},
+        \\frac{1}{\\sqrt{2}})."""
         prev = None
         while prev != s:
             prev = s
             s = re.sub(r"\\frac\{([^{}]+)\}\{([^{}]+)\}", r"((\1)/(\2))", s)
             s = re.sub(r"\\sqrt\{([^{}]+)\}", r"sqrt(\1)", s)
+        # x^{9} -> x^(9); braces aren't valid here for convert_xor/parse_expr
+        # (Python reads "{9}" as a set literal, not a grouped exponent).
+        s = re.sub(r"\^\{([^{}]+)\}", r"^(\1)", s)
         return s
 
     def _parse(s: str):
@@ -166,15 +221,32 @@ def _sympy_equivalent(a: str, b: str) -> bool | None:
             return sympify(s)
         except Exception:
             pass
-        # last resort: manually rewrite common LaTeX macros, then sympify
+        # manually rewrite common LaTeX macros, then sympify
+        rewritten = _latex_to_sympy_str(s)
         try:
-            return sympify(_latex_to_sympy_str(s))
+            return sympify(rewritten)
+        except Exception:
+            pass
+        # last resort: sympy's tolerant parser, for implicit multiplication
+        # ("(x-3)(x+3)") and bare "^" exponents plain sympify() rejects
+        try:
+            return parse_expr(rewritten, transformations=TOLERANT)
         except Exception:
             return None
 
     ea, eb = _parse(a), _parse(b)
     if ea is None or eb is None:
         return None
+    # Ordered pairs / tuples (coordinate-style answers): sympify() returns
+    # a plain Python tuple for "(1, 4.5)", which doesn't support "-", so it
+    # has to be compared element-wise rather than via simplify(ea - eb).
+    if isinstance(ea, tuple) and isinstance(eb, tuple):
+        if len(ea) != len(eb):
+            return False
+        try:
+            return all(simplify(x - y) == 0 for x, y in zip(ea, eb))
+        except Exception:
+            return None
     try:
         return simplify(ea - eb) == 0
     except Exception:

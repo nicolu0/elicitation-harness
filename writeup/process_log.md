@@ -186,6 +186,71 @@ p-values are recorded here with their interpretation.
 
 ---
 
+## Phase 2 follow-up — MATH scorer robustness: quantifying the residual gap
+
+The MATH scorer fix documented under Phase 3 (sympy tier, three false
+negatives caught and fixed) was never checked against a systematic sample
+— just the three examples that happened to surface during setup. Went
+back and did that properly, reusing the 5 existing MATH pilot logs
+(`logs/2026-08-05T01-*`, `logs/2026-08-05T03-*`, n=20 each, bare config)
+rather than spending new API budget on fresh runs.
+
+**Method:** pulled every sample scored `boxed_match=I` across all 5 logs,
+deduped by (model_answer, target) pair → 39 unique "incorrect" cases.
+Manually read each one against the model's raw completion.
+
+**Result: 12 of 39 (31%) were scorer bugs, not model errors.** Root
+causes, all fixed in `elicit_task.py`:
+- `\$40` vs `40` — the old `$`-strip did `s.replace("$", "")` on `\$40`,
+  which only deletes the `$` character and leaves a dangling backslash
+  (`\40`), so it silently never matched. Now strips `\$` explicitly first.
+- Brace-less `\frac`/`\sqrt` shorthand (`\frac56`, `\frac9{5}`, `\sqrt7`,
+  `\frac 12`) — the dataset mixes this with the fully-braced form
+  interchangeably; the sympy converter only recognized `\frac{a}{b}`.
+  Added `_brace_frac_sqrt_args()` to canonicalize both into braced form
+  before comparison (5 cases fixed directly, plus this made an
+  interval-union answer match via plain string equality once both sides
+  normalized identically).
+- Braced exponents + implicit multiplication (`x^{9}` vs `x^9`,
+  `7(x-3)(x+3)` vs `7(x+3)(x-3)`) — plain `sympify()` can't parse either
+  (Python reads `{9}` as a set literal, and implicit adjacent-parens
+  multiplication is a syntax error). Added `x^{9}` → `x^(9)` rewriting
+  plus a last-resort parse tier using sympy's own `parse_expr` with
+  `implicit_multiplication_application` + `convert_xor` — sympy's
+  purpose-built tolerant parser, not a hand-rolled regex, specifically to
+  avoid mis-parsing ambiguous input into a wrong-but-valid expression.
+- Coordinate-pair answers (`(1, 4.5)` vs `(1, \frac{9}{2})`) — `sympify()`
+  returns a plain Python tuple for these, which doesn't support `-`, so
+  the old code fell through to string comparison and missed it. Added
+  element-wise symbolic comparison when both sides parse to tuples.
+
+**Verification, both directions:**
+- Re-ran all 39 previously-incorrect cases against the fixed matcher: 12
+  now flip to correct (matches the false negatives found above), the
+  remaining 27 stay incorrect. Read all 27 by hand — genuinely wrong
+  model answers (numeric mismatches, different polynomials, wrong
+  variable/expression, word-vs-number mismatches), not new bugs.
+- Re-ran all 105 previously-*correct* cases from the same 5 logs against
+  the fixed matcher as a regression check: **zero flipped to incorrect.**
+
+**Headline number:** on the existing MATH pilot data, true bare accuracy
+was understated by 12/39 ≈ 31% of what the scorer had been calling wrong
+— i.e. a meaningful chunk of "model errors" in the pilot runs were
+actually scorer errors.
+
+**Caveat — this does not yet close the Phase 2 checkbox.** This was an
+exhaustive review of every incorrect verdict already present in 5 small
+pilot logs, not the ≥30-random-transcript spot-check with a false
+*positive* rate that Phase 2 requires. It's a strictly narrower check: it
+only looked at MATH, and only at samples already scored wrong (so it
+can't catch the matcher being too *lenient* — a false positive where two
+genuinely different answers get waved through as equivalent). GPQA's
+`letter_match` still has no spot-check at all. Still need: a real random
+30-transcript sample for both suites, checked for both directions of
+error, before Phase 2 is actually done.
+
+---
+
 ## Open item / next entry to add
 
 - [ ] Record pooled McNemar p-value: bare vs cot
