@@ -78,6 +78,16 @@ TEMPERATURE = 0.7
 # increasing cost. 5 is a reasonable starting point.
 SEEDS = [1, 2, 3, 4, 5]
 
+# Inspect's default concurrency (unset -> ~10 concurrent requests) sustained
+# enough request pressure to hit OpenAI's rate limit mid-ablation on
+# 2026-08-11 -- the run got stuck retrying for over an hour (each of
+# several in-flight samples independently backing off up to 1800s) and
+# never recovered before being killed. Capped lower here in exchange for
+# slower throughput; confirmed clean at this setting via a smoke test
+# before relaunching the full run. Raise it again if OpenAI's rate limit
+# for this account is confirmed higher, but don't just remove the cap.
+MAX_CONNECTIONS = 5
+
 # All four combinations of (cot, critique). Add keys here as you add components.
 CONFIGS = [
     {"cot": cot, "critique": cr}
@@ -101,58 +111,7 @@ def get_accuracy(log) -> float:
     return float("nan")
 
 
-def main():
-    print(
-        f"model={MODEL}  suite={SUITE}  limit={LIMIT}  "
-        f"temperature={TEMPERATURE}  seeds={SEEDS}\n"
-    )
-
-    # {config_label: [(seed, accuracy, log_path), ...]}
-    results: dict[str, list[tuple[int, float, str]]] = {}
-
-    for cfg in CONFIGS:
-        label = config_label(cfg)
-        results[label] = []
-        for seed in SEEDS:
-            log = inspect_eval(
-                elicit(suite=SUITE, **cfg),
-                model=MODEL,
-                limit=LIMIT,
-                temperature=TEMPERATURE,
-                seed=seed,
-                log_dir="./logs",
-            )[0]
-            acc = get_accuracy(log)
-            log_path = str(log.location) if hasattr(log, "location") else None
-            results[label].append((seed, acc, log_path))
-            print(f"{label:16s} seed={seed}  accuracy={acc:.3f}  log={log_path}")
-
-    print("\n=== elicitation slice (mean over seeds) ===")
-    means = {}
-    for label, runs in results.items():
-        accs = [a for _, a, _ in runs]
-        mean_acc = statistics.mean(accs)
-        spread = statistics.pstdev(accs) if len(accs) > 1 else 0.0
-        means[label] = mean_acc
-        print(f"{label:16s} mean={mean_acc:.3f}  (seed stdev={spread:.3f}, n_seeds={len(accs)})")
-
-    bare_mean = means.get("bare", float("nan"))
-    print("\n=== deltas vs bare (mean) ===")
-    for label, mean_acc in means.items():
-        delta = "" if label == "bare" else f"   (delta vs bare: {mean_acc - bare_mean:+.3f})"
-        print(f"{label:16s} mean={mean_acc:.3f}{delta}")
-
-    # Save log paths grouped by config so mcnemar_test.py can pool across
-    # seeds for a proper paired significance test, not just eyeball means.
-    # Suite AND model in the filename -- NEVER write a bare
-    # "ablation_summary.json" or a suite-only name here. Learned this the
-    # hard way twice: once when a MATH run would have clobbered GPQA's
-    # results/ablation_summary.json, and again when switching MATH from
-    # gpt-4o-mini to Together/Qwen2.5-7B (same suite, different model)
-    # would have clobbered the suite-only results/ablation_summary_math.json.
-    model_slug = MODEL.replace("/", "-").replace(":", "-").lower()
-    Path("results").mkdir(exist_ok=True)
-    summary_path = Path(f"results/ablation_summary_{SUITE}_{model_slug}.json")
+def _save_summary(summary_path: Path, results: dict[str, list[tuple[int, float, str]]]):
     with open(summary_path, "w") as f:
         json.dump(
             {
@@ -171,6 +130,83 @@ def main():
             f,
             indent=2,
         )
+
+
+def main():
+    print(
+        f"model={MODEL}  suite={SUITE}  limit={LIMIT}  "
+        f"temperature={TEMPERATURE}  seeds={SEEDS}\n"
+    )
+
+    # Suite AND model in the filename -- NEVER write a bare
+    # "ablation_summary.json" or a suite-only name here. Learned this the
+    # hard way twice: once when a MATH run would have clobbered GPQA's
+    # results/ablation_summary.json, and again when switching MATH from
+    # gpt-4o-mini to Together/Qwen2.5-7B (same suite, different model)
+    # would have clobbered the suite-only results/ablation_summary_math.json.
+    model_slug = MODEL.replace("/", "-").replace(":", "-").lower()
+    Path("results").mkdir(exist_ok=True)
+    summary_path = Path(f"results/ablation_summary_{SUITE}_{model_slug}.json")
+
+    # Resume support: this run has been killed mid-way three times now
+    # (once a real OpenAI rate limit, twice an interrupted laptop) --
+    # checkpoint after every seed instead of only at the very end, and on
+    # startup skip any (config, seed) pair a previous partial run already
+    # completed for this exact suite+model, rather than re-spending API
+    # budget re-running "bare" from scratch every time this gets killed.
+    results: dict[str, list[tuple[int, float, str]]] = {}
+    done: set[tuple[str, int]] = set()
+    if summary_path.exists():
+        with open(summary_path) as f:
+            prior = json.load(f)
+        for label, runs in prior.get("results", {}).items():
+            results[label] = [(r["seed"], r["accuracy"], r["log"]) for r in runs]
+            for r in runs:
+                done.add((label, r["seed"]))
+        if done:
+            print(f"Resuming {summary_path}: {len(done)} (config, seed) runs "
+                  f"already complete, skipping those.\n")
+
+    for cfg in CONFIGS:
+        label = config_label(cfg)
+        results.setdefault(label, [])
+        for seed in SEEDS:
+            if (label, seed) in done:
+                print(f"{label:16s} seed={seed}  SKIPPED (already in {summary_path})")
+                continue
+            log = inspect_eval(
+                elicit(suite=SUITE, **cfg),
+                model=MODEL,
+                limit=LIMIT,
+                temperature=TEMPERATURE,
+                seed=seed,
+                log_dir="./logs",
+                max_connections=MAX_CONNECTIONS,
+            )[0]
+            acc = get_accuracy(log)
+            log_path = str(log.location) if hasattr(log, "location") else None
+            results[label].append((seed, acc, log_path))
+            print(f"{label:16s} seed={seed}  accuracy={acc:.3f}  log={log_path}")
+            _save_summary(summary_path, results)  # checkpoint after every seed
+
+    print("\n=== elicitation slice (mean over seeds) ===")
+    means = {}
+    for label, runs in results.items():
+        accs = [a for _, a, _ in runs]
+        mean_acc = statistics.mean(accs)
+        spread = statistics.pstdev(accs) if len(accs) > 1 else 0.0
+        means[label] = mean_acc
+        print(f"{label:16s} mean={mean_acc:.3f}  (seed stdev={spread:.3f}, n_seeds={len(accs)})")
+
+    bare_mean = means.get("bare", float("nan"))
+    print("\n=== deltas vs bare (mean) ===")
+    for label, mean_acc in means.items():
+        delta = "" if label == "bare" else f"   (delta vs bare: {mean_acc - bare_mean:+.3f})"
+        print(f"{label:16s} mean={mean_acc:.3f}{delta}")
+
+    # Already checkpointed after every seed above -- this final write is
+    # just for a tidy "done" message, not the only save (see resume logic).
+    _save_summary(summary_path, results)
     print(f"\nSaved log paths -> {summary_path}")
     print(
         f"Run `python mcnemar_test.py --pooled {summary_path} "

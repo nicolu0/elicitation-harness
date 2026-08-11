@@ -42,17 +42,25 @@ from inspect_ai.solver import (
     generate,
     self_critique,
     system_message,
+    use_tools,
     TaskState,
 )
+from inspect_ai.tool import python
+from inspect_ai.util import sandbox
 
 # --------------------------------------------------------------------------
 # Shared solver-building logic (identical across every task type)
 # --------------------------------------------------------------------------
 
-def build_solver(cot: bool, critique: bool, system_prompt: str):
+def build_solver(cot: bool, critique: bool, system_prompt: str, tool_use: bool = False):
     steps = [system_message(system_prompt)]
     if cot:
         steps.append(chain_of_thought())
+    if tool_use:
+        # Inspect's generate() handles the tool-call/tool-result loop
+        # automatically once a tool is registered via use_tools() -- no
+        # extra looping logic needed here.
+        steps.append(use_tools(python()))
     steps.append(generate())
     if critique:
         steps.append(self_critique())
@@ -62,6 +70,9 @@ def build_solver(cot: bool, critique: bool, system_prompt: str):
 # --------------------------------------------------------------------------
 # Adapter interface: every dataset type provides a loader + a scorer +
 # a system prompt tailored to its answer format. Nothing else varies.
+# `sandbox` is None for every adapter except code-execution ones, which
+# need sandbox="docker" on the Task for both the tool_use python() tool
+# and code_execution_match's own test-running to actually work.
 # --------------------------------------------------------------------------
 
 @dataclass
@@ -70,6 +81,7 @@ class TaskAdapter:
     system_prompt: str
     load: Callable[[], Dataset]
     scorer: Callable[[], Scorer]
+    sandbox: str | None = None
 
 
 # ---- Adapter: plain numeric Q&A (GSM8K-style) -----------------------------
@@ -415,41 +427,69 @@ def boxed_match():
 
 
 # ---- Adapter: code execution (HumanEval-style) -----------------------------
-# NOTE: this adapter needs a Docker sandbox to actually execute code safely.
-# It's included here to show the pattern; wire up sandbox="docker" on the
-# Task before running it for real. Left unregistered by default until then
-# -- see the note at the bottom of the registry.
+# Needs a Docker sandbox to actually execute code safely -- wired via
+# TaskAdapter's sandbox="docker" in the registry below, which elicit()
+# passes straight to the Task. Both the tool_use python() tool and this
+# adapter's own scorer depend on that sandbox existing; the "docker run
+# hello-world" / Docker Desktop check is a real prerequisite, not optional.
 
 def _load_humaneval() -> Dataset:
     def record_to_sample(record):
         return Sample(
             input=record["prompt"],
-            target=record["test"],  # a pytest-style test string
+            target=record["test"],  # a pytest-style test string defining check(candidate)
             metadata={"entry_point": record["entry_point"]},
         )
 
     return hf_dataset(
-        "openai_humaneval", split="test",
+        "openai/openai_humaneval", split="test",
         sample_fields=record_to_sample, shuffle=False,
     )
 
 
 HUMANEVAL_SYSTEM = (
-    "Complete the Python function. Return ONLY the code, no explanation."
+    "Complete the Python function. Return ONLY the full function "
+    "(signature + body), no explanation and no markdown code fences."
 )
+
+
+def _strip_code_fence(text: str) -> str:
+    """Strip a markdown ```python ... ``` (or bare ```) fence if the model
+    wrapped its answer in one despite being told not to -- an extremely
+    common chat-model habit, not a hypothetical edge case."""
+    text = text.strip()
+    m = re.match(r"^```(?:python)?\s*\n(.*?)\n?```\s*$", text, re.DOTALL)
+    return m.group(1) if m else text
 
 
 @scorer(metrics=[accuracy(), stderr()])
 def code_execution_match():
-    """Placeholder scorer shape -- real version executes state.output
-    against target's test code inside the sandbox and checks pass/fail.
-    Wire this up when you add sandbox="docker" to the Task below."""
+    """Executes the model's completed function against HumanEval's own
+    check(candidate) test harness inside the task's sandbox (see
+    sandbox="docker" on the humaneval adapter below) and scores pass/fail
+    on the actual execution result -- not a text match, the whole point of
+    this suite existing."""
 
     async def score(state: TaskState, target: Target):
-        # TODO: run in sandbox, e.g. via inspect_ai.util.sandbox().exec(...)
-        raise NotImplementedError(
-            "code_execution_match needs sandbox=\"docker\" wired up on the "
-            "Task before this adapter is usable -- see project step 7."
+        code = _strip_code_fence(state.output.completion)
+        entry_point = state.metadata.get("entry_point")
+        script = f"{code}\n\n{target.text}\n\ncheck({entry_point})\n"
+
+        sb = sandbox()
+        await sb.write_file("test_solution.py", script)
+        try:
+            result = await sb.exec(["python3", "test_solution.py"], timeout=30)
+        except TimeoutError:
+            return Score(
+                value="I", answer=code,
+                explanation="execution timed out after 30s (likely an infinite loop)",
+            )
+
+        correct = result.success
+        return Score(
+            value="C" if correct else "I",
+            answer=code,
+            explanation=None if correct else (result.stderr or result.stdout)[-1000:],
         )
 
     return score
@@ -542,13 +582,18 @@ ADAPTERS: dict[str, TaskAdapter] = {
     ).match(location="end", numeric=True)),
     "math": TaskAdapter("math", MATH_SYSTEM, _load_math, boxed_match),
     "gpqa": TaskAdapter("gpqa", GPQA_SYSTEM_BASE, _load_gpqa, letter_match),
-    # "humaneval": TaskAdapter("humaneval", HUMANEVAL_SYSTEM, _load_humaneval,
-    #                           code_execution_match),  # needs sandbox first
+    "humaneval": TaskAdapter(
+        "humaneval", HUMANEVAL_SYSTEM, _load_humaneval, code_execution_match,
+        sandbox="docker",
+    ),
 }
 
 
 @task
-def elicit(suite: str = "math", cot: bool = False, critique: bool = False):
+def elicit(
+    suite: str = "math", cot: bool = False, critique: bool = False,
+    tool_use: bool = False,
+):
     if suite not in ADAPTERS:
         raise ValueError(
             f"Unknown suite '{suite}'. Available: {list(ADAPTERS)}. "
@@ -557,6 +602,7 @@ def elicit(suite: str = "math", cot: bool = False, critique: bool = False):
     adapter = ADAPTERS[suite]
     return Task(
         dataset=adapter.load(),
-        solver=build_solver(cot, critique, adapter.system_prompt),
+        solver=build_solver(cot, critique, adapter.system_prompt, tool_use),
         scorer=adapter.scorer(),
+        sandbox=adapter.sandbox,
     )
