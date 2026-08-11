@@ -38,6 +38,8 @@ A year ago you could argue that benchmark scores are harness-dependent and it wo
 
 So "the harness matters" is not a finding anymore. What remains unmeasured is the **structure** of the effect: every published example operates at the whole-harness or whole-budget level. None of them decompose *which component* is responsible, whether components interact, how each one trades against simply spending more tokens, or whether the contribution structure is stable across models. That decomposition — done reproducibly, on open weights, as a tool others can run — is the gap this fills.
 
+There's a second, more practical reason this matters right now: a growing share of production usage is moving off closed-API providers (OpenAI, Anthropic) onto open-weight models, either self-hosted or served by third-party open-weight inference providers (Together, Fireworks, Groq-style hosts), largely on cost grounds at scale. That shift removes something teams got for free when calling a closed API: the provider's own tuned default system prompt, safety scaffolding, and retry/elicitation behavior. A team standing up an open-weight model has to build all of that themselves — which means they own 100% of the elicitation-quality question this project measures, with none of the vendor safety net a closed API quietly provided. Per-component attribution and the standardized-harness deficit are not just an evaluator's concern in that setting; they're a direct build-vs-buy and model-selection input for exactly the teams making that switch.
+
 ## What's actually novel here
 
 To be explicit about the line between settled and new, because it's the whole point of the project:
@@ -82,7 +84,7 @@ flowchart LR
     R --> A4[Cost-per-solve<br/>Pareto frontier]
 ```
 
-Models sit behind one interface (local vLLM and hosted APIs are the same path). Each component is an independently toggleable plugin, and **budget is a first-class swept axis** alongside the discrete toggles. The runner sweeps components × budget × model × seed; the four analysis blocks are the novel outputs.
+Models sit behind one interface via Inspect AI's provider abstraction — swapping `openai/gpt-4o-mini` for `together/Qwen/Qwen2.5-7B-Instruct-Turbo` is a one-line config change, no code changes. Validated so far against OpenAI's hosted API and Together's hosted open-weight inference; a fully local vLLM endpoint should work through the same interface (Inspect supports it) but hasn't been run against this harness yet — treat that path as designed-for, not yet verified, until it's actually exercised. Each component is an independently toggleable plugin, and **budget is a first-class swept axis** alongside the discrete toggles. The runner sweeps components × budget × model × seed; the four analysis blocks are the novel outputs.
 
 ## Install
 
@@ -203,6 +205,7 @@ Pinned model/dependency versions, fixed seeds, committed `results/`, one-command
 - **For model selection:** the component × budget substitution map plus cost-per-solve says which model-plus-scaffold meets a bar most cheaply — and warns when a bare-eval ranking would have picked wrong.
 - **For agent teams:** per-component attribution shows which scaffolding earns its latency and which is dead weight, and at which budgets.
 - **For capability forecasting / risk:** under-elicitation under-reports dangerous capability; this quantifies how much, and shows whether a standardized eval systematically under-elicits some models.
+- **For teams moving off closed-API providers onto open-weight models:** once there's no vendor-tuned default scaffold to lean on, per-component attribution says which harness pieces are actually worth building in-house, and the standardized-harness deficit quantifies how much elicitation quality a naive migration would leave on the table relative to a well-scaffolded one.
 
 ## Limitations
 
