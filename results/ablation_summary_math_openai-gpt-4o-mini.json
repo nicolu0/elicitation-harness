@@ -1,0 +1,22 @@
+{
+  "model": "openai/gpt-4o-mini",
+  "suite": "math",
+  "limit": 500,
+  "temperature": 0.7,
+  "seeds": [
+    1,
+    2,
+    3,
+    4,
+    5
+  ],
+  "results": {
+    "bare": [
+      {
+        "seed": 1,
+        "accuracy": 0.244,
+        "log": "/Users/nicoluo/dev/elicitation-harness/logs/2026-08-11T16-06-12-00-00_elicit_MYuRSSrCwmSSZrGPu9DGLA.eval"
+      }
+    ]
+  }
+}

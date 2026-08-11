@@ -30,7 +30,7 @@ Nobody disputes that the harness affects the benchmark score. OpenAI, the UK AI 
 
 ---
 
-## Why?
+## Why bother
 
 Research has been done to conclude that benchmark scores depend on the harness. This is now a basic assumption. Here's more information:
 
@@ -50,36 +50,32 @@ So for those teams this is a build versus buy question. Which scaffold pieces ar
 
 ## What's new here
 
-Being blunt about where the line is, since it's the whole point:
-
-| Already known (we cite it, we don't claim it) | What we actually measure |
+| Already known | What we actually measure |
 |---|---|
 | The harness changes measured capability | Which components carry the change, with per component credit assignment |
-| More budget means higher scores | How components and budget substitute for each other: which components stop mattering once you can afford more tokens, and which buy you something tokens never will |
+| More budget means higher scores | How components and budget substitute for each other: which components stop mattering once you can afford more tokens, and which don't |
 | Swapping whole harnesses changes score and cost | Cost per solved task, broken down per component |
 | Standardized and max effort harnesses give different numbers | Whether the per component ranking transfers across models, and if it doesn't, how unevenly a fixed harness shortchanges different models |
 
-If everything on the right comes out flat (credit spread evenly, no interaction with budget, rankings transfer perfectly, no ranking flips), that's a clean result too. It would mean standardized harnesses are unbiased and cheap evaluations are safe to trust. The project is set up so the boring answer is still worth publishing.
+If everything on the right comes out flat (credit spread evenly, no interaction with budget, rankings transfer perfectly, no ranking flips), that's still worth reporting. It would mean standardized harnesses are unbiased and cheap evaluations can be trusted, which is also a useful outcome to report.
 
 ## The four things we test
 
-Four claims, each one falsifiable, each one producing a figure.
-
 **1. Credit is concentrated, and the parts aren't independent.**
 
-We expect a small number of components to account for most of the improvement, and we expect them to interact. The way to check is to measure the gap between the bare model and the full harness, then subtract the sum of what each component contributes on its own. If that leftover is not zero, the harness is more (or less) than the sum of its parts. Published work reports whole harness effects and never this leftover term.
+We expect a small number of components to account for most of the improvement, and we expect them to interact. The way to check is to measure the gap between the bare model and the full harness, then subtract the sum of what each component contributes on its own. If that leftover is not zero, the harness is more (or less) than the sum of its parts. 
 
 **2. Components and budget partly substitute for each other.**
 
-Run the same analysis at several token budgets. Some components should lose their value as budget rises, because they were buying you something extra compute would have bought anyway. Others should hold their value no matter how much you spend. This is the direct follow up to the AISI budget scaling result: fine, more tokens help, but which parts of the harness are still earning their keep at 100 million tokens?
+Run the same analysis at several token budgets. Some components should lose their value as budget rises, because they were buying you something extra compute would have bought anyway. Others should hold their value no matter how much you spend. This is the direct follow up to the AISI budget scaling result: more tokens help, but which parts of the harness are still contributing at 100 million tokens?
 
 **3. The ranking may not transfer. This is the one we care most about.**
 
-Compute the per component ranking separately for each model. Either it's stable across models and sizes, or it isn't. If it isn't, then a single fixed harness is leaving more capability on the table for some models than for others. That's not extra noise, it's a systematic bias in any comparison that uses a shared harness, and it's measurable.
+Compute the per component ranking separately for each model. Either it's stable across models and sizes, or it isn't. If it isn't, then a single fixed harness is leaving more capability on the table for some models than for others. 
 
 **4. Head to head comparisons can flip.**
 
-Model A beats model B with no scaffolding, then loses once both are fully scaffolded. Or the winner changes when you change the budget. If that happens, then the verdict of a "controlled comparison" depends on a harness decision that most reports never even mention.
+Model A beats model B with no scaffolding, then loses once both are fully scaffolded. Or the winner changes when you change the budget. If that happens, then the verdict of a "controlled comparison" depends on a harness decision.
 
 ## How it works
 
@@ -105,9 +101,9 @@ flowchart LR
 
 Models sit behind Inspect AI's provider layer, so switching from `openai/gpt-4o-mini` to `together/Qwen/Qwen2.5-7B-Instruct-Turbo` is a one line config edit with no code changes.
 
-A caveat worth stating plainly: this has been run against OpenAI's hosted API and against Together's hosted open-weight inference. A fully local vLLM endpoint should work through the same interface, since Inspect supports it, but nobody has actually pointed this harness at one yet. Treat that path as designed for, not verified, until someone exercises it.
+So far this has only been run against OpenAI's hosted API and Together's hosted open-weight inference. A fully local vLLM endpoint should work through the same interface, since Inspect supports it, but nobody has actually pointed this harness at one yet. Treat that path as designed for, not verified, until someone exercises it.
 
-Each component is a plugin you can switch on or off independently. Budget is not a setting buried in a config file, it's an axis we sweep just like the on/off switches, because otherwise you can't tell components and compute apart. The runner grinds through components × budget × model × seed, and the four analyses at the end are the actual output.
+Each component is a plugin you can switch on or off independently. Budget gets swept as an axis alongside the on/off switches, because otherwise there's no way to tell components and compute apart. The runner works through components × budget × model × seed, and the four analyses at the end are the output.
 
 ## Install
 
@@ -193,15 +189,15 @@ class Component(Protocol):
 
 **Substitution with budget.** `[best_of_n / planning]` contributes `[+X at low budget and roughly nothing at high budget]`, while `[tool_use]` holds steady at `[+Y]` across the whole range. Read that as: `[best-of-N]` mostly buys what extra compute would have bought you anyway, and `[tool use]` buys something compute can't.
 
-**Transfer across models.** The component rankings correlate at `[ρ = 0.?]` between `[small]` and `[large]`. `[If that number is low:]` the same fixed harness leaves `[Z points]` more on the table for `[large]` than for `[small]`, which means a fixed harness comparison is `[tilted toward / against]` the bigger model. Not noisier. Tilted.
+**Transfer across models.** The component rankings correlate at `[ρ = 0.?]` between `[small]` and `[large]`. `[If that number is low:]` the same fixed harness leaves `[Z points]` more on the table for `[large]` than for `[small]`, which means a fixed harness comparison is `[tilted toward / against]` the bigger model in a way that running more seeds won't fix.
 
-**Flipped comparisons.** With a `[low budget standardized]` harness, `[A beats B]`. With `[max effort elicitation]`, `[B beats A]`. Same models, same tasks, opposite verdict, and the deciding factor is a harness choice that usually doesn't make it into the writeup.
+**Flipped comparisons.** With a `[low budget standardized]` harness, `[A beats B]`. With `[max effort elicitation]`, `[B beats A]`. Same models and same tasks, opposite verdict, decided by a harness choice that usually doesn't make it into the writeup.
 
 If it turns out that credit is spread evenly, budget doesn't interact with anything, rankings transfer cleanly, and nothing flips, then standardized harnesses are safe and we report exactly that.
 
 ## How this maps onto evaluation vocabulary
 
-Evaluators tend to distinguish two kinds of claim. Running the full scaffold at high budget gives you a **capability under strong elicitation** estimate, which is a lower bound on what the model can do. Running a shared fixed configuration across models gives you a **standardized comparison**, which is what you want for apples to apples.
+Evaluators tend to distinguish two kinds of claim. Running the full scaffold at high budget gives you a **capability under strong elicitation** estimate, which is a lower bound on what the model can do. Running a shared fixed configuration across models gives you a **standardized comparison**, which is what you want when the point is to compare models rather than harnesses.
 
 The interesting quantity is the distance between those two, measured separately for each model. If the distance is the same for everyone, the standardized comparison is fine. If it isn't, the comparison is measuring the harness as much as the models. This tool lets you sit in either regime and see, per component, what each one costs you and what it gets you.
 
@@ -230,7 +226,7 @@ The framework doesn't care which models or tasks you point it at. The specific s
 
 Pinned model and dependency versions, fixed seeds, `results/` committed to the repo, one command to regenerate every figure, and full transcripts saved through Inspect.
 
-One honest caveat: even at temperature 0, model outputs are not perfectly reproducible. Batching, hardware differences, and floating point ordering all introduce small variations. That's why every number here is a mean over multiple seeds with an interval attached, rather than a single run reported as fact.
+Worth knowing: even at temperature 0, model outputs are not perfectly reproducible. Batching, hardware differences, and floating point ordering all introduce small variations. That's why every number here is a mean over multiple seeds with an interval attached, rather than a single run reported as fact.
 
 ## Who this is useful for
 
@@ -247,9 +243,9 @@ One honest caveat: even at temperature 0, model outputs are not perfectly reprod
 ## Limitations
 
 - We are not claiming to have discovered that the harness matters. That's established. The contribution is the breakdown, the substitution structure, and the transfer result.
-- Inference time only, no fine-tuning. So the results bound elicited capability, which is itself a lower bound on capability. A lower bound on a lower bound.
-- Results are specific to the task suites, model families, and budget range we tested. Whether they generalize is what the tool exists to let other people check.
-- "Capability" here means task success under a particular scoring rule. That's a narrow proxy, deliberately, because narrow proxies are the ones you can actually verify.
+- Inference time only, no fine-tuning. The results bound elicited capability, which is already a lower bound on what the weights can do.
+- Results are specific to the task suites, model families, and budget range we tested. Whether they generalize is something other people can check with the same tool.
+- "Capability" here means task success under a particular scoring rule. That's a narrow definition, chosen because narrow ones are the ones you can check.
 
 ## Prior work
 

@@ -34,13 +34,19 @@ import re
 from dataclasses import dataclass
 from typing import Callable
 
+import json
+from functools import lru_cache
+
 from inspect_ai import Task, task
 from inspect_ai.dataset import Dataset, Sample, hf_dataset
 from inspect_ai.scorer import Score, Scorer, Target, scorer, accuracy, stderr
 from inspect_ai.solver import (
+    Generate,
+    Solver,
     chain_of_thought,
     generate,
     self_critique,
+    solver,
     system_message,
     use_tools,
     TaskState,
@@ -49,11 +55,73 @@ from inspect_ai.tool import python
 from inspect_ai.util import sandbox
 
 # --------------------------------------------------------------------------
+# Retrieval component: BM25 lookup over suites/retrieval_corpus.jsonl
+# (built + contamination-checked by build_retrieval_corpus.py -- see
+# suites/contamination_report.json before trusting this on a new suite).
+# --------------------------------------------------------------------------
+
+RETRIEVAL_CORPUS_PATH = "suites/retrieval_corpus.jsonl"
+RETRIEVAL_TOP_K = 3
+
+
+@lru_cache(maxsize=1)
+def _load_bm25_index():
+    """Lazy + cached: only paid once per process, and only if `retrieval`
+    is actually toggled on -- configs that never use retrieval never pay
+    for loading or indexing the corpus."""
+    from rank_bm25 import BM25Okapi
+
+    docs = []
+    with open(RETRIEVAL_CORPUS_PATH) as f:
+        for line in f:
+            docs.append(json.loads(line))
+    tokenized = [d["passage"].lower().split() for d in docs]
+    return BM25Okapi(tokenized), docs
+
+
+def _retrieve(query: str, k: int = RETRIEVAL_TOP_K) -> list[dict]:
+    bm25, docs = _load_bm25_index()
+    scores = bm25.get_scores(query.lower().split())
+    top_idx = sorted(range(len(docs)), key=lambda i: scores[i], reverse=True)[:k]
+    return [docs[i] for i in top_idx]
+
+
+@solver
+def retrieval() -> Solver:
+    """Retrieves top-k BM25 passages for the sample's own input text and
+    prepends them to the user prompt, clearly labeled as reference
+    material rather than instructions -- this is the `retrieval` toggle's
+    entire job; everything else about answering the question is
+    unaffected. Runs BEFORE generate() in build_solver() so the retrieved
+    context is present for the model's first (and only, if cot/critique
+    are off) generation."""
+
+    async def solve(state: TaskState, generate: Generate) -> TaskState:
+        passages = _retrieve(state.input_text)
+        context = "\n\n".join(
+            f"[Reference {i+1}: {p['title']}]\n{p['passage']}"
+            for i, p in enumerate(passages)
+        )
+        state.user_prompt.text = (
+            f"Reference material (may or may not be relevant to the "
+            f"question below):\n\n{context}\n\n---\n\n{state.user_prompt.text}"
+        )
+        return state
+
+    return solve
+
+
+# --------------------------------------------------------------------------
 # Shared solver-building logic (identical across every task type)
 # --------------------------------------------------------------------------
 
-def build_solver(cot: bool, critique: bool, system_prompt: str, tool_use: bool = False):
+def build_solver(
+    cot: bool, critique: bool, system_prompt: str,
+    tool_use: bool = False, use_retrieval: bool = False,
+):
     steps = [system_message(system_prompt)]
+    if use_retrieval:
+        steps.append(retrieval())
     if cot:
         steps.append(chain_of_thought())
     if tool_use:
@@ -592,7 +660,7 @@ ADAPTERS: dict[str, TaskAdapter] = {
 @task
 def elicit(
     suite: str = "math", cot: bool = False, critique: bool = False,
-    tool_use: bool = False,
+    tool_use: bool = False, retrieval: bool = False,
 ):
     if suite not in ADAPTERS:
         raise ValueError(
@@ -602,7 +670,10 @@ def elicit(
     adapter = ADAPTERS[suite]
     return Task(
         dataset=adapter.load(),
-        solver=build_solver(cot, critique, adapter.system_prompt, tool_use),
+        solver=build_solver(
+            cot, critique, adapter.system_prompt, tool_use,
+            use_retrieval=retrieval,
+        ),
         scorer=adapter.scorer(),
         sandbox=adapter.sandbox,
     )

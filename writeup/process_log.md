@@ -617,6 +617,124 @@ actually depend on.
 
 ---
 
+## Phase 4 — gpt-4o-mini MATH ablation: three interruptions and a checkpointing fix
+
+Getting the clean gpt-4o-mini re-run (fixed `MATH_SYSTEM` prompt, needed
+for a real GPQA comparison) actually finished took four launches. Logging
+the failure modes and fixes since they're real infrastructure lessons,
+not just noise.
+
+**Interruption 1 — a genuine OpenAI rate limit, distinct from the earlier
+credit exhaustion.** First relaunch after the prompt fix: `bare` completed
+cleanly, all 5 seeds (0.224, 0.240, 0.252, 0.234, 0.242 — consistent with
+each other and with the n=20 validation pilot's 0.250). Then `critique`
+seed 1 hit `RateLimitError 429 rate_limit_exceeded` (not
+`credit_balance_exhausted` — a different account limit, throughput not
+budget) partway through its 500 samples, and got stuck retrying with
+exponential backoff (up to 1800s between attempts, 12+ retries) for over
+an hour without recovering before being killed.
+
+**Fix: capped concurrency.** Inspect's default `max_connections` is unset
+(effectively ~10 concurrent requests), which was likely sustaining enough
+request pressure that individual retries never found a clear window.
+Added an explicit `MAX_CONNECTIONS = 5` constant to `run_ablation.py`,
+threaded through to every `inspect_eval()` call. Validated with a smoke
+test (n=10, `critique` config — the one that had failed) before trusting
+it: completed cleanly, no rate-limit errors, though noticeably slower
+(~3min for 10 samples vs. bare's much faster pace, since critique is a
+2-turn generation).
+
+**Interruptions 2 and 3 — the laptop going to sleep, not a code or API
+issue.** Relaunched with the concurrency cap: first attempt produced a
+completely empty output file and zero completed samples within minutes
+(`status: started`, 0 results) — died almost immediately, no error
+recorded anywhere. Relaunched again: this time `bare` seeds 1-4 completed
+cleanly (0.240, 0.244, 0.240, 0.244, zero errors) before stopping
+silently with no error output, right as it would have moved into
+`critique`. Confirmed with the user afterward: the laptop had gone to
+sleep both times, killing the background process outright — not
+something fixable from the code side, but worth knowing the failure
+signature (empty/truncated output, zero error lines, process just gone)
+so it's not mistaken for a rate limit or API issue next time.
+
+**Fix: checkpoint/resume support added to `run_ablation.py`.** Three
+interruptions in a row each meant re-running `bare` from scratch — real
+wasted API spend on a component that had already succeeded twice. Added
+`_save_summary()` and called it after **every individual seed**, not just
+at the end; and on startup, if a summary file for this exact suite+model
+already exists, load it, build a set of already-completed `(config,
+seed)` pairs, and skip those instead of re-running them. This makes any
+future interruption resume from wherever it left off rather than
+restarting the whole 20-run sweep.
+
+**Current status: relaunched a fourth time with checkpointing in place,
+in progress.** First checkpoint already written
+(`results/ablation_summary_math_openai-gpt-4o-mini.json`, `bare` seed 1 =
+0.244, consistent with prior runs). Will update this entry with full
+results and the pooled McNemar tests once it completes.
+
+## Phase 5 — tool use + HumanEval: code implementation done, empirical steps still pending
+
+Built out the Phase 5 code while the gpt-4o-mini ablation ran in the
+background, specifically because none of this needs the OpenAI API and
+so doesn't compete with it for rate-limit budget.
+
+**Docker: confirmed working.** Binary was already installed but the
+daemon wasn't running (`docker run hello-world` initially failed with
+"Cannot connect to the Docker daemon"). Started Docker Desktop; reran
+`hello-world` successfully once it was up.
+
+**`tool_use` toggle added to `build_solver()`.** Wired via Inspect's
+built-in `use_tools(python())`, inserted before `generate()` — Inspect's
+`generate()` handles the tool-call/tool-result loop internally once a
+tool is registered, no custom looping logic needed. Threaded through
+`elicit()`'s task signature as a new `tool_use: bool` parameter.
+
+**`humaneval` adapter wired up for real** (was registered but commented
+out, with `code_execution_match` raising `NotImplementedError`):
+- Dataset ID needed fixing: `"openai_humaneval"` no longer resolves on
+  current HuggingFace (unnamespaced repo IDs were deprecated) — confirmed
+  via `HfApi().list_datasets(search="humaneval")` and found the correct
+  current path, `openai/openai_humaneval`.
+- Implemented `code_execution_match` for real: writes the model's
+  completed function plus HumanEval's own `check(candidate)` test
+  harness to a file inside the sandbox, executes it via
+  `sandbox().exec()`, scores on the actual pass/fail result — not a text
+  match, which is the entire reason this suite exists (it's the one
+  place `tool_use` and later `planning` have something real to act on,
+  per Phase 5's own rationale in phases.md). Added a markdown code-fence
+  stripper (`_strip_code_fence`) since chat models routinely wrap answers
+  in ` ```python ` blocks even when explicitly told not to — a real
+  formatting habit, not a hypothetical edge case. 30s execution timeout
+  guard in case the model's code has an infinite loop.
+- `TaskAdapter` gained an optional `sandbox` field, threaded through to
+  the `Task` constructor; `humaneval` is the only adapter that sets it.
+
+**Verified everything except live model behavior, all without touching
+the OpenAI API:** `elicit(suite="humaneval", tool_use=True)` builds a
+`Task` with `sandbox='docker'` set correctly; the dataset loads (164
+samples — matches HumanEval's known size); sample structure is right
+(input = function signature/docstring, target = the `check(candidate)`
+test string, metadata carries `entry_point`); solver step counts are
+correct for every toggle combination (4 steps with `tool_use=True`: system
+message, cot, use_tools, generate; 2 steps bare).
+
+**Explicitly NOT done yet — the phase's own empirical requirements**,
+deferred until the API isn't tied up with the MATH ablation:
+- n=20 smoke test confirming the sandbox actually spins up, the model
+  actually invokes the `python()` tool at least once (checked in
+  transcripts, not assumed), and the scorer reads real execution results
+  correctly
+- Full ablation on `humaneval`: 4-config baseline (bare/cot/critique/
+  cot+critique) for a same-footing comparison, then `tool_use` added as a
+  5th toggle dimension (2⁴=16 configs, 5 seeds)
+- Pooled McNemar: bare vs tool_use, cot+tool_use vs cot
+- Transcript spot-check for actual tool-invocation rate on questions
+  where it should plausibly help — not just "the code exists," a real
+  rate needs to be reported per Phase 5's acceptance criteria
+
+---
+
 ## Open item / next entry to add
 
 - [x] Record pooled McNemar p-value: bare vs cot — p=0.0401, significant
@@ -643,14 +761,17 @@ actually depend on.
       critique makes it worse again. Both documented above, with the
       confound (suite change AND model change at once) stated explicitly
       — this is NOT yet a confirmed cross-suite finding
-- [ ] Re-run the MATH ablation on `openai/gpt-4o-mini` once OpenAI
-      credits are restored, for a clean same-model comparison against GPQA
-- [ ] Fix `MATH_SYSTEM` to have a true bare-vs-cot split, the same way
-      GPQA's `GPQA_SYSTEM_BASE`/`GPQA_SYSTEM` do — currently every MATH
-      config's system prompt says "show your reasoning" regardless of the
-      `cot` toggle, which only became visible as a problem with a verbose
-      model (Qwen3.5-9B) but is a latent validity issue for every MATH
-      result so far, including gpt-4o-mini's and Qwen2.5-7B's
+- [x] Fix `MATH_SYSTEM` to have a true bare-vs-cot split — DONE, see
+      "MATH_SYSTEM prompt-leak fix" entry above. Confirmed a large effect
+      (leaky bare was ~0.552, properly-bare is ~0.25) — every MATH result
+      before this fix is provisional, including the Qwen2.5-7B ablation
+      and the 7-subject headroom comparison (rankings probably still
+      hold, absolute numbers don't)
+- [ ] Re-run the MATH ablation on `openai/gpt-4o-mini` with the fixed
+      prompt — IN PROGRESS (4th launch attempt, checkpointing now added
+      to `run_ablation.py` after 3 prior interruptions — see "gpt-4o-mini
+      MATH ablation" entry above for the full saga). First checkpoint
+      written (`bare` seed 1 = 0.244); not yet complete.
 - [ ] GPQA still has no false-positive check at all (only the
       system-prompt bug and the CoT-leak fix have been examined) — run
       `spot_check.py` against a GPQA log before treating GPQA's numbers
@@ -662,4 +783,30 @@ actually depend on.
       real per-sample cost data now exists for both gpt-4o-mini (n=500
       intermediate_algebra: 611,833 tokens, 4m42s) and Qwen2.5-7B-
       Instruct-Turbo (n=40: 39,100 tokens, 23s) to base it on
-- [ ] Then: begin Phase 5 (tool use, Docker sandbox)
+- [x] Phase 5 code implementation — DONE: `tool_use` toggle,
+      `humaneval` adapter (dataset ID fixed, `code_execution_match`
+      actually implemented), Docker confirmed working. See "tool use +
+      HumanEval" entry above.
+- [ ] Phase 5 empirical steps — NOT DONE: n=20 smoke test (sandbox
+      spin-up, real tool invocation, scorer correctness), full 16-config
+      ablation on humaneval, pooled McNemar, tool-invocation-rate spot
+      check. Blocked on the gpt-4o-mini MATH ablation finishing first
+      (both need OpenAI API budget, avoiding concurrent pressure after
+      the rate-limit incident above).
+- [ ] Phase 6 (retrieval) setup started: built a 5000-doc random-Wikipedia
+      corpus (`build_retrieval_corpus.py`, `suites/retrieval_corpus.jsonl`)
+      with a shingle-overlap contamination check (`suites/
+      contamination_report.json` — clean, 21 generic all-digit-shingle
+      false alarms correctly excluded) and wired a `retrieval` toggle
+      into `build_solver()`/`elicit()` via local BM25 lookup
+      (`rank_bm25`). BUT: spot-checked retrieval quality against real
+      GPQA/MATH questions and found the random-Wikipedia corpus returns
+      near-random, topically irrelevant passages (e.g. "Toyota Group" for
+      a quantum mechanics question) — confirmed this is systematic, not
+      a couple of unlucky draws. Decision made but not yet executed:
+      rebuild the corpus via Wikipedia category-membership filtering
+      (verified working via the MediaWiki API, e.g. `Category:Quantum
+      mechanics` returns real on-topic titles) instead of a random
+      sample, keeping the same pre-gather-once/check-once/retrieve-
+      locally architecture and rerunning the same contamination check
+      against the new corpus before trusting it.
