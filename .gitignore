@@ -219,3 +219,8 @@ __marimo__/
 # Streamlit
 .streamlit/secrets.toml
 logs/
+
+# Generated retrieval corpus -- large, deterministic, cheap to rebuild via
+# build_retrieval_corpus.py (fixed seed). Keep the script and the
+# contamination report (suites/*.json) committed; not the corpus itself.
+suites/*.jsonl
