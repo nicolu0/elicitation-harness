@@ -116,50 +116,140 @@ def _extract_boxed(text: str) -> str | None:
     return text[start : i - 1].strip() if depth == 0 else None
 
 
-# Matches one \frac/\sqrt argument: a {...} group, a \command (optionally
-# with its own {...} group, e.g. \sqrt{7}), or a single bare character.
-_FRAC_ARG = r"(\{[^{}]*\}|\\[a-zA-Z]+(?:\{[^{}]*\})?|[^\s{}])"
+def _consume_balanced(s: str, i: int) -> tuple[str, int] | None:
+    """s[i] must be '{'. Return (substring including braces, index just
+    past the matching closing brace), correctly handling nested braces
+    (e.g. the inner "{6}" inside the outer "{\\sqrt{6}}")."""
+    if i >= len(s) or s[i] != "{":
+        return None
+    depth, j = 1, i + 1
+    while j < len(s) and depth > 0:
+        if s[j] == "{":
+            depth += 1
+        elif s[j] == "}":
+            depth -= 1
+        j += 1
+    return (s[i:j], j) if depth == 0 else None
+
+
+def _consume_frac_arg(s: str, i: int) -> tuple[str, int] | None:
+    """Consume one \\frac/\\sqrt argument starting at s[i]: a {...} group
+    (nesting allowed), a \\command optionally followed by its own {...}
+    group (e.g. \\sqrt{7}), or a single bare character (a digit, in
+    practice)."""
+    if i >= len(s):
+        return None
+    if s[i] == "{":
+        return _consume_balanced(s, i)
+    if s[i] == "\\":
+        j = i + 1
+        while j < len(s) and s[j].isalpha():
+            j += 1
+        if j == i + 1:
+            return None
+        if j < len(s) and s[j] == "{":
+            grp = _consume_balanced(s, j)
+            return (s[i:j] + grp[0], grp[1]) if grp else None
+        return (s[i:j], j)
+    return (s[i], i + 1)
 
 
 def _brace_frac_sqrt_args(s: str) -> str:
     """Normalize brace-less \\frac / \\sqrt shorthand into the fully-braced
     canonical form: \\frac56 / \\frac 56 / \\frac9{5} -> \\frac{9}{5},
-    \\sqrt7 -> \\sqrt{7}. Found in real MATH transcripts (both styles are
-    used interchangeably by the dataset and are never meaningfully
-    different) -- without this, two answers that are byte-for-byte the same
-    once rendered were failing both the string and sympy comparison because
-    the sympy fallback below only recognizes the fully-braced form."""
-    prev = None
-    while prev != s:
-        prev = s
-        s = re.sub(r"\\sqrt(?!\{)(\d)", r"\\sqrt{\1}", s)
+    \\sqrt7 / \\sqrt 7 -> \\sqrt{7}. Found in real MATH transcripts (both
+    styles are used interchangeably by the dataset and are never
+    meaningfully different) -- without this, two answers that are
+    byte-for-byte the same once rendered were failing both the string and
+    sympy comparison because the sympy fallback only recognizes the
+    fully-braced form.
 
-        def _wrap(m: re.Match) -> str:
-            a, b = m.group(1), m.group(2)
-            a = a if a.startswith("{") else "{%s}" % a
-            b = b if b.startswith("{") else "{%s}" % b
-            return "\\frac%s%s" % (a, b)
+    Uses an explicit balanced-brace scanner (_consume_frac_arg), not a
+    single regex, because a regex requiring "{[^{}]*}" for an "already
+    braced" arg silently fails to match -- and therefore skips the WHOLE
+    \\frac, including a brace-less SIBLING arg that still needed fixing --
+    the moment either arg has any nesting in it. Real example that broke
+    the old regex version: \\frac{\\sqrt6}3, where the numerator itself
+    contains \\sqrt6."""
+    # \sqrt7 / \sqrt 7 -> \sqrt{7} first, so a nested \sqrt inside a \frac
+    # arg is already canonical by the time the \frac scan below reads it.
+    s = re.sub(r"\\sqrt(?!\{)\s*(\d)", r"\\sqrt{\1}", s)
 
-        s = re.sub(r"\\frac\s*" + _FRAC_ARG + r"\s*" + _FRAC_ARG, _wrap, s)
-    return s
+    out, i, n = [], 0, len(s)
+    while i < n:
+        if s.startswith("\\frac", i):
+            j = i + 5
+            while j < n and s[j] == " ":
+                j += 1
+            first = _consume_frac_arg(s, j)
+            if first is not None:
+                a, j2 = first
+                while j2 < n and s[j2] == " ":
+                    j2 += 1
+                second = _consume_frac_arg(s, j2)
+                if second is not None:
+                    b, j3 = second
+                    a = a if a.startswith("{") else "{%s}" % a
+                    b = b if b.startswith("{") else "{%s}" % b
+                    out.append("\\frac%s%s" % (a, b))
+                    i = j3
+                    continue
+        out.append(s[i])
+        i += 1
+    return "".join(out)
+
+
+def _strip_text_wrapper(s: str) -> str:
+    """\\text{...} shows up in MATH answers two unrelated ways: wrapping a
+    non-numeric answer entirely (\\text{Evelyn}, \\text{June 20}) or tacked
+    on as a discardable unit/label suffix on a numeric answer
+    (118 \\text{ dollars}, 440\\text{ cm}^2 -- the trailing ^2 there is
+    part of the "cm^2" unit, not a real exponent, so it has to be stripped
+    along with the \\text{} it's attached to, or a bare "^2" would be left
+    behind corrupting the number). Disambiguate the two cases by whether
+    \\text{...} is the ENTIRE answer (unwrap, keep the contents) or just
+    part of it (strip it as a label, discard the contents)."""
+    stripped = s.strip()
+    m = re.fullmatch(r"\\text\{([^{}]*)\}", stripped)
+    if m:
+        return m.group(1)
+    return re.sub(r"\\text\{[^{}]*\}(\^\{?\d+\}?)?", "", s)
 
 
 def _clean_latex(ans: str) -> str:
     """Normalize superficial LaTeX/formatting differences that don't change
     meaning: \\dfrac/\\tfrac -> \\frac, brace-less \\frac/\\sqrt shorthand
-    braced, \\left \\right removed, spacing commands removed, a leading
-    "x \\in " / "x = " variable prefix stripped, a literal \\$ (currency)
-    stripped, whitespace collapsed, trailing period and $ removed."""
+    braced, \\text{} unwrapped or stripped, \\left \\right removed,
+    "+\\infty" treated as "\\infty", spacing commands (incl. "\\ ")
+    removed, a leading "x \\in " / "x = " variable prefix stripped, a
+    literal \\$ (currency) stripped, thousands-separator commas collapsed
+    when the whole answer is nothing but a grouped number, whitespace
+    collapsed, trailing period and $ removed."""
     s = ans.strip()
-    s = re.sub(r"\\d?frac", r"\\frac", s)          # \dfrac, \tfrac -> \frac
+    s = re.sub(r"\\[dt]?frac", r"\\frac", s)  # \dfrac, \tfrac -> \frac
+    # ^ was "\\d?frac", which only ever made the "d" optional -- despite
+    # this docstring (and the old one) claiming \tfrac was handled, it
+    # silently never matched. Found via a fresh \frac{10}{3} vs
+    # \tfrac{10}{3} false negative that had nothing to do with sympy at all.
     s = _brace_frac_sqrt_args(s)
+    s = _strip_text_wrapper(s)
     s = s.replace("\\left", "").replace("\\right", "")
-    s = re.sub(r"\\[,;:!]", "", s)                  # LaTeX spacing commands
+    s = s.replace("+\\infty", "\\infty")  # "+infinity" == "infinity"
+    s = re.sub(r"\\[,;:! ]", "", s)                 # LaTeX spacing commands
     s = re.sub(r"^[a-zA-Z]\s*(\\in|=)\s*", "", s)   # "x \in ", "x = " prefix
     # NOTE: strip "\$" (escaped currency dollar) before the bare "$" strip
     # below -- doing only the bare strip turns "\$40" into the broken "\40"
     # (dangling backslash) instead of "40", which was a real false negative.
     s = s.replace("\\$", "").replace("$", "").rstrip(".").strip()
+    # "$15,000" typed as "15,000": collapse thousands-separator commas, but
+    # ONLY when the whole remaining answer is nothing but a comma-grouped
+    # number -- a genuine multi-value list ("4,6,14,15") must never be
+    # touched. Residual, documented ambiguity: a list of three three-digit
+    # values ("100,200,300") is indistinguishable from one grouped number
+    # by string shape alone; no such case has been observed in this
+    # dataset so far.
+    if re.fullmatch(r"-?\d{1,3}(,\d{3})+(\.\d+)?", s):
+        s = s.replace(",", "")
     s = re.sub(r"\s+", "", s)
     return s
 

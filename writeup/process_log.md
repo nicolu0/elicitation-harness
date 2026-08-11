@@ -251,13 +251,60 @@ error, before Phase 2 is actually done.
 
 ---
 
+## Phase 4 — pooled McNemar results (GPQA)
+
+Ran the two pending pooled tests against `results/ablation_summary.json`
+(GPQA Diamond, n=198, 5 seeds, temperature=0.7):
+
+```
+python mcnemar_test.py --pooled results/ablation_summary.json bare cot
+python mcnemar_test.py --pooled results/ablation_summary.json cot cot+critique
+```
+
+**bare vs cot:** mean accuracy 0.351 vs 0.386. Pooled 2x2 (275 total
+disagreements across 5 seeds): bare-right/cot-wrong=120, cot-right/bare-
+wrong=155. Exact McNemar p=0.0401 — **significant at p<0.05**. CoT is
+reliably better than bare on GPQA, not just sampling noise.
+
+**cot vs cot+critique:** mean accuracy 0.386 vs 0.383. Pooled 2x2 (197
+disagreements): cot-right/critique-wrong=100, critique-right/cot-wrong=97
+— almost exactly balanced. Exact McNemar p=0.887 — **not significant**.
+The interaction finding (critique adds nothing on top of cot, and if
+anything sits marginally below) now has a p-value behind it on GPQA, not
+just an eyeballed delta: the two configs are statistically
+indistinguishable. This is the third independent observation of the same
+pattern (GSM8K pilot, single-seed GPQA, now pooled 5-seed GPQA), and this
+time it's backed by a significance test rather than an eyeballed delta —
+considered a supported finding on GPQA specifically, not yet cross-suite
+since the MATH pooled sweep hasn't been run (see below).
+
+As noted in mcnemar_test.py's own pooled-mode caveat: seeds share the
+same fixed 198-question set, so treat both p-values as approximate rather
+than textbook-exact independent draws.
+
+**This closes the GPQA half of Phase 4's blocking checklist item.** The
+MATH half is still open — `results/ablation_summary.json` only has a
+`"suite": "gpqa"` run; the 5-seed × 4-config sweep has never been run on
+MATH, only single-seed n=20 pilots (see Phase 2 follow-up above). Given
+MATH_SUBJECT is currently `"algebra"` and is showing signs of being
+near-ceiling for gpt-4o-class models (little room for scaffold components
+to move the needle), don't spend the API budget on a full pooled MATH
+sweep until the suite's headroom problem is resolved — see the open item
+below.
+
 ## Open item / next entry to add
 
-- [ ] Record pooled McNemar p-value: bare vs cot
-- [ ] Record pooled McNemar p-value: cot vs cot+critique
-- [ ] Write one paragraph interpreting both in plain language
-      (significant / trend / not significant), and note whether the
-      three-run replication of the "critique doesn't stack with cot"
-      pattern is now considered a supported finding or still just
-      suggestive
+- [x] Record pooled McNemar p-value: bare vs cot — p=0.0401, significant
+- [x] Record pooled McNemar p-value: cot vs cot+critique — p=0.887, not
+      significant
+- [x] Write one paragraph interpreting both in plain language — done
+      above
+- [ ] Fix MATH headroom (swap `MATH_SUBJECT` to a harder subject, and/or
+      filter by the already-captured `level` metadata) before running
+      the 5-seed pooled MATH sweep
+- [ ] Run the ≥30-random-transcript spot check (`spot_check.py`, just
+      added, not yet run against any log) for both GPQA and MATH,
+      counting false positives AND false negatives — the other open
+      Phase 2 requirement, separate from the MATH scorer's own
+      exhaustive-incorrect-case review above
 - [ ] Then: begin Phase 5 (tool use, Docker sandbox)
