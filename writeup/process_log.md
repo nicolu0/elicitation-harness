@@ -128,3 +128,71 @@ was giving bare letter answers with no reasoning leaking through).
 (stderr 0.114) — noted as not yet resolvable at this sample size,
 deferred to the full run rather than over-interpreted.
 
+## Phase 4 — First real ablation result (GPQA, cot + critique)
+
+**n=200 (198, full Diamond set), temperature=0 (single seed):**
+```
+bare             accuracy=0.338
+critique         accuracy=0.374   (+0.035)
+cot              accuracy=0.409   (+0.071)
+cot+critique     accuracy=0.384   (+0.045, lower than cot alone)
+```
+Bare accuracy (33.8%) finally landed in the published range — confirms
+the system-prompt fix worked and this run measures something real.
+McNemar (single run): bare vs cot p=0.098 — a real-looking effect
+(+7.1pts) that doesn't clear α=0.05, limited by disagreement count (~60
+discordant pairs) rather than the outcome being genuinely null. GPQA
+Diamond is capped at 198 questions total, so raising `--limit` further
+wasn't an option for more power.
+
+**Decision: add temperature + multi-seed pooling to get more power
+without more raw samples.** At temperature=0 the model is
+near-deterministic, so repeated runs on the same 198 questions add no
+new information. Set `TEMPERATURE=0.7` (real sampling variation, still
+coherent) identically across every config being compared (never varying
+temperature between compared configs — would confound the scaffold
+effect with a temperature effect). Ran `SEEDS=[1,2,3,4,5]`. Updated
+`run_ablation.py` to sweep seeds and save per-config log paths to
+`results/ablation_summary.json`; extended `mcnemar_test.py` with a
+`--pooled` mode that sums the 2x2 discordant-pair table across all 5
+seeds before running one binomial test on the pooled total (documented
+caveat: repeated seeds on the same fixed question set aren't fully
+independent draws, so the resulting p-value is an approximation, not
+textbook-exact). Also fixed a latent bug in `mcnemar_test.py`: the
+scorer-name lookup was hardcoded to `"match"`, which would have silently
+broken on the `boxed_match` and `letter_match` logs — generalized to try
+a list of known scorer names.
+
+**5-seed pooled run (n=198, temperature=0.7) — means:**
+```
+bare             mean=0.351  (seed stdev=0.016)
+critique         mean=0.355  (seed stdev=0.016)   (+0.004)
+cot              mean=0.386  (seed stdev=0.019)   (+0.035)
+cot+critique     mean=0.383  (seed stdev=0.018)   (+0.032, lower than cot alone)
+```
+Tight seed-to-seed consistency (stdev 0.016-0.019) — the sampling is
+behaving sensibly. Pattern replicates what was seen on GSM8K and the
+single-seed GPQA run: critique alone does ~nothing; CoT is the real
+driver; adding critique on top of CoT never adds to the gain and
+consistently sits slightly below CoT alone. Third independent
+observation of this interaction, across two different task types now.
+
+**Status at time of writing: pooled McNemar significance test on bare
+vs cot, and cot vs cot+critique, has been run/is being run against
+`results/ablation_summary.json` — final p-values not yet confirmed
+and written down here. This is the one open item before Phase 4 can be
+marked complete.** Do not proceed to Phase 5 (tool use) until both
+p-values are recorded here with their interpretation.
+
+---
+
+## Open item / next entry to add
+
+- [ ] Record pooled McNemar p-value: bare vs cot
+- [ ] Record pooled McNemar p-value: cot vs cot+critique
+- [ ] Write one paragraph interpreting both in plain language
+      (significant / trend / not significant), and note whether the
+      three-run replication of the "critique doesn't stack with cot"
+      pattern is now considered a supported finding or still just
+      suggestive
+- [ ] Then: begin Phase 5 (tool use, Docker sandbox)
