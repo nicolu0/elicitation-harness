@@ -122,9 +122,9 @@ class Component(Protocol):
 
 ## Methodology
 
-**Only tasks with checkable answers.** Scores come from running code or comparing against ground truth, never from asking another model whether the answer looks good. We used GSM8K for quick slices, then SWE-bench Verified Mini, which is graded by actually running the tests.
+**Only tasks with checkable answers.** Scores come from running code or comparing against ground truth, never from asking another model whether the answer looks good. GSM8K was tried first and rejected (bare accuracy too close to ceiling to have statistical power); GPQA Diamond is the primary suite, MATH (intermediate algebra) the secondary one, and HumanEval the code-execution suite, graded by actually running the tests against the model's generated function.
 
-**Credit assignment using Shapley values, plus an interaction term.** Shapley values come from cooperative game theory. The idea: to work out how much one player contributed to a team, you look at every possible order the players could have joined in, and average how much the score went up when that player showed up. With 6 components there are only 64 combinations, so we run all of them and get the exact answer rather than an estimate. Then we take the full gap between bare and scaffolded, subtract the sum of the individual contributions, and report the leftover. That leftover is the interaction: positive means the components amplify each other, negative means they get in each other's way. We also report plain leave-one-out numbers (turn off one component, see what you lose) so you can see where the two methods disagree.
+**Credit assignment using Shapley values, plus an interaction term.** Shapley values come from cooperative game theory. The idea: to work out how much one player contributed to a team, you look at every possible order the players could have joined in, and average how much the score went up when that player showed up. With however many components are toggled on, there are exactly 2ⁿ combinations, small enough (for the component counts used here) to run every one and get the exact answer rather than an estimate. Then we take the full gap between bare and scaffolded, subtract the sum of the individual contributions, and report the leftover. That leftover is the interaction: positive means the components amplify each other, negative means they get in each other's way. We also report plain leave-one-out numbers (turn off one component, see what you lose) so you can see where the two methods disagree.
 
 **The budget sweep.** Redo the whole credit assignment at low, medium, and high budget. The output is a 2D map: component on one axis, budget on the other, contribution as the value. Substitution shows up as a component's contribution fading out to the right.
 
@@ -138,11 +138,11 @@ class Component(Protocol):
 
 ## Findings
 
-**Credit and interaction.** On `[small model]` with `[SWE-bench Verified Mini]`, `[two of six]` components account for `[roughly 80%]` of the total improvement. The interaction term is `[+N points]`, meaning the components `[amplify / interfere with]` each other and the harness is not the sum of its parts.
+**Credit and interaction.** On `[small model]` with `[GPQA Diamond]`, `[two of four]` components account for `[roughly 80%]` of the total improvement. The interaction term is `[+N points]`, meaning the components `[amplify / interfere with]` each other and the harness is not the sum of its parts.
 
 **Substitution with budget.** `[best_of_n / planning]` contributes `[+X at low budget and roughly nothing at high budget]`, while `[tool_use]` holds steady at `[+Y]` across the whole range. Read that as: `[best-of-N]` mostly buys what extra compute would have bought you anyway, and `[tool use]` buys something compute can't.
 
-**Transfer across models.** The component rankings correlate at `[ρ = 0.?]` between `[small]` and `[large]`. `[If that number is low:]` the same fixed harness leaves `[Z points]` more on the table for `[large]` than for `[small]`, which means a fixed harness comparison is `[tilted toward / against]` the bigger model in a way that running more seeds won't fix.
+**Transfer across models.** The component rankings correlate at `[ρ = 0.?]` between `[Qwen2.5-7B]` and `[Llama-3.1-8B]` — similar scale, different families, so this measures whether attribution generalizes across model families rather than across model size within one family. `[If that number is low:]` the same fixed harness leaves `[Z points]` more on the table for `[one model]` than for `[the other]`, which means a fixed harness comparison is `[tilted toward / against]` one family in a way that running more seeds won't fix.
 
 **Flipped comparisons.** With a `[low budget standardized]` harness, `[A beats B]`. With `[max effort elicitation]`, `[B beats A]`. Same models and same tasks, opposite verdict, decided by a harness choice that usually doesn't make it into the writeup.
 

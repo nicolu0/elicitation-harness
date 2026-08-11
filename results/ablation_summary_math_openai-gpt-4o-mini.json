@@ -26,6 +26,11 @@
         "seed": 3,
         "accuracy": 0.248,
         "log": "/Users/nicoluo/dev/elicitation-harness/logs/2026-08-11T19-14-51-00-00_elicit_HLcipoioHmWTFm5CJuEDjz.eval"
+      },
+      {
+        "seed": 4,
+        "accuracy": 0.236,
+        "log": "/Users/nicoluo/dev/elicitation-harness/logs/2026-08-11T20-26-27-00-00_elicit_mshonnUJqAQMvCRhSELCYH.eval"
       }
     ]
   }
