@@ -185,6 +185,21 @@
         "seed": 1,
         "accuracy": 0.3333333333333333,
         "log": "/Users/nicoluo/dev/elicitation-harness/logs/2026-08-13T17-50-28-00-00_elicit_2BAecbGvnpMEudyVLPicAn.eval"
+      },
+      {
+        "seed": 2,
+        "accuracy": 0.2878787878787879,
+        "log": "/Users/nicoluo/dev/elicitation-harness/logs/2026-08-13T18-01-01-00-00_elicit_3zkosUkciExaJ2MMCVmqHy.eval"
+      },
+      {
+        "seed": 3,
+        "accuracy": 0.2878787878787879,
+        "log": "/Users/nicoluo/dev/elicitation-harness/logs/2026-08-13T18-50-24-00-00_elicit_ZaQX6JSfPrrsAVFFsttWX9.eval"
+      },
+      {
+        "seed": 4,
+        "accuracy": 0.25757575757575757,
+        "log": "/Users/nicoluo/dev/elicitation-harness/logs/2026-08-13T19-01-04-00-00_elicit_NstNfCvg76nhifj2vAxHEB.eval"
       }
     ]
   }

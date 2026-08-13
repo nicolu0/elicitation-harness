@@ -1299,12 +1299,94 @@ did on MATH earlier, not just adds):
       out to answer in ~5 output tokens/sample. Comfortably affordable
       even with margin for compounding effects the additive estimate
       doesn't capture.
-- [ ] A dedicated sweep-runner script for the 16-config × 5-seed ×
-      2-model Shapley study — not yet written. Deliberately NOT added to
-      `run_ablation.py`, which is currently running the live Phase 4
-      gpt-4o-mini MATH-vs-GPQA comparison (now fully done with `bare`,
-      5/5 seeds, moving into `critique`); needs its own script so editing
-      it can't corrupt that in-flight work's checkpoint resume.
-- [ ] Full 4-component (2⁴=16 config) × 5-seed × 2-model Shapley sweep on
-      GPQA — not started; blocked only on the new runner script now, both
-      real bugs are fixed and the cost is validated
+- [x] A dedicated sweep-runner script for the 16-config × 5-seed ×
+      2-model Shapley study — DONE: `run_shapley_sweep.py`, deliberately
+      separate from `run_ablation.py` per the reasoning above. Reuses the
+      same checkpoint-after-every-seed / resume-from-partial pattern
+      `run_ablation.py` already proved out. See "Phase 10" entry below.
+- [x] Full 4-component (2⁴=16 config) × 5-seed Shapley sweep on GPQA,
+      model 1 of 2 (`Qwen2.5-7B-Instruct-Turbo`) — DONE, all 80 runs
+      clean. Model 2 (`gemma-3n-E4B-it`) IN PROGRESS after a real
+      20-hour API-timeout stall, investigated and resumed cleanly. See
+      "Phase 10" entry below for both.
+
+---
+
+## Phase 10 — Shapley sweep: `run_shapley_sweep.py`, Qwen complete, Gemma stalled and resumed
+
+Wrote `run_shapley_sweep.py` per the open item above: separate script
+from `run_ablation.py` for the same corruption-risk reason stated in the
+Phase 9 entry, reusing the exact same proven patterns (checkpoint after
+every seed, resume-from-partial via a `(label, seed)` done-set loaded
+from the existing summary JSON, `MAX_CONNECTIONS=5`) rather than
+rediscovering them. `MODEL_PAIR` iterates the two locked-in models in
+sequence, each writing its own `results/shapley_sweep_gpqa_{model_slug}.
+json` — mirrors the earlier suite-specific-output-path fix that prevented
+a MATH run from clobbering the GPQA one.
+
+**Qwen2.5-7B-Instruct-Turbo: full sweep completed cleanly.** All 16
+configs × 5 seeds = 80 runs, saved to `results/shapley_sweep_gpqa_
+together-qwen-qwen2.5-7b-instruct-turbo.json`. No errors, no
+interruptions during this model's run.
+
+**gemma-3n-E4B-it: interrupted partway, twice.** First launch got through
+only `bare` and `multi_critic` (2/16 combos, 5/5 seeds each) before the
+background process was killed (external interruption, not a crash — no
+error in the process's own output). Resumed via the same script (confirmed
+the checkpoint-skip logic works exactly as designed: all 80 already-done
+Qwen runs and gemma's 2 done combos were skipped, not re-run).
+
+**Second interruption: a genuine ~20-hour API stall, not a transient
+blip.** After resuming, `planning` finished cleanly (5/5 seeds), then
+`planning+multi_critic` seed 1 got stuck retrying `APITimeoutError` on 5
+specific samples (42, 45, 46, 47, 48) against `google/gemma-3n-E4B-it`,
+continuously, from 13:03:52 to 08:40 the next day — 48+ consecutive retry
+attempts at a 30-minute capped backoff, zero progress. Confirmed via
+`inspect_ai`'s own `GenerateConfig` that `max_retries` defaults to `None`
+(unbounded) — left alone, this would have retried forever rather than
+eventually failing out on its own.
+
+Investigated before just restarting blind, since 20 hours of consistent
+failure is long enough to suspect a real, recurring problem rather than
+bad luck:
+- Checked the 5 stuck samples' question length against the full GPQA
+  Diamond distribution (mean 431 chars, stdev 261) — all 5 landed at
+  116-613 chars, unremarkable, no outlier. Ruled out "these specific
+  questions are pathologically long" as the cause.
+- Noted that exactly 5 samples stuck matches `MAX_CONNECTIONS=5` exactly
+  — consistent with these just being the last batch still in-flight when
+  the API started timing out, not specially cursed content.
+- Direct live test call to `google/gemma-3n-E4B-it` (bypassing
+  `run_shapley_sweep.py` entirely, via the OpenAI-compatible client
+  against Together's endpoint) succeeded in 0.88s. Confirms the API was
+  healthy again at investigation time — the stall was a real but
+  apparently transient (if very long-lived) Together-side reliability
+  issue specific to that model, most likely aggravated by
+  `planning+multi_critic` being a heavier multi-turn request than `bare`.
+
+**Killed the stuck process and relaunched the same way** (same script,
+same checkpoint-resume). Confirmed clean this time: `planning+
+multi_critic` finished all 5 seeds with sane accuracy values (0.268,
+0.318, 0.298, 0.318, 0.298 — consistent with the other combos, no
+lingering damage from the stall), then continued cleanly through
+`tool_use` and `tool_use+multi_critic` (5/5 seeds each) with zero
+`APITimeoutError` occurrences in the new run's log.
+
+**Status as of last check: 6/16 gemma combos fully done** (`bare`,
+`multi_critic`, `planning`, `planning+multi_critic`, `tool_use`,
+`tool_use+multi_critic`), `tool_use+planning` in progress (1/5 seeds),
+process confirmed still running. 9 combos remain after the current one.
+Not yet done: the final `_save_summary()` call only happens once a model's
+full loop completes, so `results/shapley_sweep_gpqa_together-google-
+gemma-3n-e4b-it.json` won't reach 16/16 until the whole gemma sweep
+finishes — and Phase 10's own follow-up (Shapley attribution + interaction
+term computation over both models' summary JSONs, referenced in
+`run_shapley_sweep.py`'s own closing print statement) hasn't been started.
+
+**Standing note for later:** `run_shapley_sweep.py` still has no
+`max_retries` or per-attempt `timeout` cap (same as `run_ablation.py`
+before it). Given this stall lasted 20 hours specifically because retries
+are unbounded, consider adding an explicit cap before the next long
+unattended run — not fixed now, since restarting mid-sweep-design-change
+would have meant validating a second thing at once instead of just
+confirming the resume worked.
