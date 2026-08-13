@@ -130,6 +130,15 @@ PLANNING_PROMPT = (
     "numbered plan -- do not solve the problem yet."
 )
 
+# Deliberately does NOT hardcode an answer format (no "ANSWER: X", no
+# "\boxed{}") -- planning() is suite-agnostic, and each suite's own
+# system prompt (GPQA_SYSTEM_BASE, MATH_SYSTEM, HUMANEVAL_SYSTEM) already
+# specifies its own format. This just points back at those instructions.
+PLANNING_FOLLOWUP_PROMPT = (
+    "Now answer the original question, following the plan above and the "
+    "answer-format instructions from the system message."
+)
+
 
 @solver
 def planning() -> Solver:
@@ -149,11 +158,28 @@ def planning() -> Solver:
     actually references the plan, since it's genuinely earlier
     conversation history the model has access to during the main
     generate() step that follows -- not an inference from prompt text
-    that was never actually part of the exchange."""
+    that was never actually part of the exchange.
+
+    BUG FOUND AND FIXED (2026-08-11): the first version stopped right
+    after the plan turn and relied on build_solver()'s own trailing
+    generate() call to produce the final answer. That doesn't work --
+    with the conversation ending on the model's OWN plan turn and no
+    explicit next instruction, the model has nothing telling it to stop
+    planning and start answering, and it just repeats/continues the plan
+    instead. Confirmed via real transcripts: GPQA accuracy collapsed to
+    0.04-0.12 (from a 0.40-0.48 bare baseline) with EVERY sample failing
+    to produce a parseable ANSWER: line -- not a "planning hurts
+    reasoning" finding, a missing prompt. Fixed by appending an explicit
+    follow-up instruction (PLANNING_FOLLOWUP_PROMPT) after the plan,
+    telling the model to now actually answer using the plan -- mirrors
+    how self_critique()'s own completion_template re-poses the question
+    and explicitly asks for a new answer, rather than trusting the model
+    to infer that on its own."""
 
     async def solve(state: TaskState, generate: Generate) -> TaskState:
         state.messages.append(ChatMessageUser(content=PLANNING_PROMPT))
         state = await generate(state)
+        state.messages.append(ChatMessageUser(content=PLANNING_FOLLOWUP_PROMPT))
         return state
 
     return solve
@@ -753,6 +779,15 @@ def elicit(
             f"To add one, register a new TaskAdapter above."
         )
     adapter = ADAPTERS[suite]
+    # tool_use needs an actual sandbox for python() to execute in, or
+    # Inspect crashes the whole task the moment the model invokes the
+    # tool (ProcessLookupError: no sandbox provided) -- found this the
+    # hard way running tool_use on GPQA, which has no sandbox of its own
+    # (only humaneval does). Only add docker when tool_use is actually
+    # toggled on for THIS config, not unconditionally for every GPQA
+    # config -- the other 15 configs in the 4-component sweep never
+    # touch it and shouldn't pay Docker's per-sample startup cost.
+    sandbox = adapter.sandbox or ("docker" if tool_use else None)
     return Task(
         dataset=adapter.load(),
         solver=build_solver(
@@ -761,5 +796,5 @@ def elicit(
             use_multi_critic=multi_critic, critic_model=critic_model,
         ),
         scorer=adapter.scorer(),
-        sandbox=adapter.sandbox,
+        sandbox=sandbox,
     )

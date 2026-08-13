@@ -1070,6 +1070,125 @@ MATH validation. README and phases.md updated to replace the stale
 Llama-3.1-8B references (Findings section placeholder, Phase 12,
 Phase 3's feasibility-estimate note).
 
+## `tool_use` on GPQA crashed the whole task — GPQA had no sandbox
+
+Found while starting the token-cost pilot for the 4 in-scope components,
+before even getting to real cost numbers. `elicit(suite="gpqa",
+tool_use=True)` doesn't just run tool_use ineffectively on GPQA (the
+outcome Phase 5's own requirements already warned about, "little for a
+code tool to do") — it **crashes the entire task** the moment the model
+actually invokes the tool: `ProcessLookupError: No sandbox environment
+has been provided`. Only `humaneval`'s `TaskAdapter` has `sandbox=
+"docker"` set; `gpqa` has none, and Inspect's `python()` tool needs a
+real sandbox to execute in regardless of which suite is asking.
+
+This is a real conflict between two decisions that were never checked
+against each other: the "GPQA only for now" scope decision, and `tool_use`
+being one of the 4 locked-in components. Locking in GPQA-only implicitly
+assumed every component would at least *run* there, which was never
+verified for `tool_use` specifically until now.
+
+**Fix:** `elicit()` now sets `sandbox = adapter.sandbox or ("docker" if
+tool_use else None)` — only spins up Docker when `tool_use` is actually
+toggled on for that specific config, not unconditionally for every GPQA
+run. This matters because 15 of the 16 configs in the sweep don't use
+`tool_use` at all and shouldn't pay Docker's per-sample startup cost.
+
+Verified the fix: same n=10 Qwen2.5-7B `tool_use=True` GPQA pilot that
+crashed before now completes cleanly (`status: success`, accuracy=0.3,
+1 real tool call across 10 samples — confirms the model does
+occasionally reach for the tool on GPQA questions, not that it's
+silently unused). One-time Docker image pull for Inspect's sandbox
+tooling (`aisiuk/inspect-tool-support`, ~700MB) happened on this first
+run; cached for subsequent ones.
+
+**Standing caveat, not fixed by this, just no longer fatal:** Phase 5's
+own concern about `tool_use` having "little for a code tool to do" on
+non-code multiple-choice questions is still a live, separate question —
+fixing the crash means `tool_use` on GPQA can now produce a *real*
+number, but that number might legitimately be small/null just because
+GPQA rarely calls for a calculator. That would be a valid finding, not a
+bug, and is exactly what the pilot below is partly for.
+
+## Token-cost pilot (n=25, GPQA, both locked-in models) — found and fixed a second real bug, then got real cost numbers
+
+Ran bare + each of the 4 in-scope components alone, on both Qwen2.5-7B
+and gemma-3n-E4B-it, specifically to replace the earlier turn-based cost
+*estimate* with measured numbers.
+
+**Found a second real bug before getting to the cost question at all:
+`planning` was structurally broken, not just weak.** Raw pilot result —
+Qwen2.5-7B bare 0.480 → planning 0.040; gemma-3n-E4B-it bare 0.400 →
+planning 0.120. Too large a collapse to be a real effect (stderr ~0.10);
+checked transcripts before believing it. Root cause: `planning()`
+appended the plan-request, got the plan back as a real assistant turn,
+then just returned — relying on `build_solver()`'s own trailing
+`generate()` call to produce the final answer. But with the conversation
+ending on the model's OWN plan turn and no explicit next instruction,
+the model had nothing telling it to stop planning and start answering,
+so it just repeated/continued the plan. Confirmed directly in
+transcripts: EVERY sample's final "answer" was the plan text verbatim,
+scorer correctly reading `(no ANSWER: line found)` on all of them.
+
+**Fix:** added `PLANNING_FOLLOWUP_PROMPT`, an explicit user message
+appended after the plan turn telling the model to now actually answer,
+using the plan, following the system prompt's format instructions
+(deliberately doesn't hardcode "ANSWER: X" or `\boxed{}` — `planning()`
+is meant to be suite-agnostic, so it defers to whatever format the
+active suite's own system prompt already specifies). Mirrors how
+Inspect's own `self_critique()` re-poses the question and explicitly
+asks for a new answer in its `completion_template`, rather than trusting
+the model to infer that on its own — same lesson, independently
+rediscovered.
+
+**Verified the fix, same exact configs:**
+
+| model | before fix | after fix | no-answer rate |
+|---|---|---|---|
+| Qwen2.5-7B | 0.040 | **0.320** | 0/25 (was 25/25) |
+| gemma-3n-E4B-it | 0.120 | **0.360** | 1/25 (was 25/25) |
+
+Both still land somewhat below their bare baselines (0.480, 0.400) —
+that residual gap might be a real, modest planning-hurts-a-little effect
+worth reporting later, or might narrow further with more samples; no
+longer a broken pipeline either way, which is what mattered here.
+
+**Full pilot results, all 5 configs, real per-sample token costs (n=25,
+GPQA, temperature=0):**
+
+| model | config | accuracy | in/sample | out/sample |
+|---|---|---|---|---|
+| Qwen2.5-7B | bare | 0.480 | 254 | 5 |
+| Qwen2.5-7B | critique | 0.440 | 935 | 5 |
+| Qwen2.5-7B | tool_use | 0.360 | 538 | 5 |
+| Qwen2.5-7B | planning | 0.320 | 709 | 101 |
+| Qwen2.5-7B | multi_critic | 0.440 | 909 | 5 |
+| gemma-3n-E4B-it | bare | 0.400 | 241 | 5 |
+| gemma-3n-E4B-it | critique | 0.400 | 871 | 115 |
+| gemma-3n-E4B-it | tool_use | 0.360 | 270 | 5 |
+| gemma-3n-E4B-it | planning | 0.360 | 708 | 677 |
+| gemma-3n-E4B-it | multi_critic | 0.400 | 875 | 118 |
+
+Side observation: both models answer GPQA in ~5 output tokens/sample in
+the bare condition (just a letter, as instructed) — GPQA's answer format
+is far more concise than MATH's free-form answers, which is exactly why
+the earlier turn-based cost model (calibrated on Qwen's MATH data,
+830 output tokens/turn) was a significant overestimate for this suite.
+
+**Revised cost estimate using these real numbers** (additive
+approximation — sum each active component's measured overhead over bare;
+likely a floor, not a ceiling, since stacking multiple turn-adding
+components probably compounds context-resend cost the way `cot+critique`
+did on MATH earlier, not just adds):
+
+- Qwen2.5-7B, 16 configs × 5 seeds × n=198: **$6.39**
+- gemma-3n-E4B-it, 16 configs × 5 seeds × n=198: **$1.93**
+- **Total: ~$8.31** — down from the earlier $45.58 estimate, because
+  that estimate was built on MATH-shaped token costs and GPQA is much
+  cheaper per sample. Even with a generous 2-3x margin for compounding
+  effects the additive model doesn't capture, this is comfortably
+  affordable.
+
 ---
 
 ## Open item / next entry to add
@@ -1163,16 +1282,29 @@ Phase 3's feasibility-estimate note).
 - [x] `multi_critic` toggle — BUILT (thin wrapper around Inspect's own
       `self_critique(model=...)`, see "Phase 9" entry above). All 4
       in-scope components now exist in `elicit_task.py`.
-- [ ] Pilot the 4 real components (`tool_use`, `planning`, `multi_critic`
-      empirically untested; `critique` already has real data) at small
-      scale (n=20-40, 1 seed, on the locked-in models) to replace the
-      estimated per-component token costs with measured ones before
-      committing to the full sweep
+- [x] Pilot the 4 real components at small scale (n=25, GPQA, both
+      locked-in models) — DONE, real per-component token costs measured.
+      Found and fixed two real bugs along the way, both more important
+      than the cost numbers themselves: (1) `tool_use` crashed the whole
+      task on GPQA (no sandbox configured — fixed, `elicit()` now adds
+      Docker only when `tool_use` is actually toggled on); (2)
+      `planning` was silently broken (0.04-0.12 accuracy, 25/25
+      no-answer — missing a follow-up instruction telling the model to
+      actually answer after planning, not a real reasoning collapse —
+      fixed, recovered to 0.32-0.36). See both entries above.
+- [x] Revised cost estimate using real (not estimated) per-component
+      costs: **~$8.31** for the full 16-config × 5-seed × 2-model sweep
+      on GPQA — down from the earlier $45.58 estimate, since that one was
+      calibrated on MATH's much longer free-form answers and GPQA turns
+      out to answer in ~5 output tokens/sample. Comfortably affordable
+      even with margin for compounding effects the additive estimate
+      doesn't capture.
 - [ ] A dedicated sweep-runner script for the 16-config × 5-seed ×
       2-model Shapley study — not yet written. Deliberately NOT added to
       `run_ablation.py`, which is currently running the live Phase 4
-      gpt-4o-mini MATH-vs-GPQA comparison; needs its own script so
-      editing it can't corrupt that in-flight work's checkpoint resume.
+      gpt-4o-mini MATH-vs-GPQA comparison (now fully done with `bare`,
+      5/5 seeds, moving into `critique`); needs its own script so editing
+      it can't corrupt that in-flight work's checkpoint resume.
 - [ ] Full 4-component (2⁴=16 config) × 5-seed × 2-model Shapley sweep on
-      GPQA — not started; blocked on the pilot above and the new runner
-      script
+      GPQA — not started; blocked only on the new runner script now, both
+      real bugs are fixed and the cost is validated
