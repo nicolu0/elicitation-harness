@@ -1390,3 +1390,49 @@ are unbounded, consider adding an explicit cap before the next long
 unattended run — not fixed now, since restarting mid-sweep-design-change
 would have meant validating a second thing at once instead of just
 confirming the resume worked.
+
+**Sweep finished — then one more bad cell surfaced on the last check.**
+The gemma run went on to complete all 16 combos cleanly (no further
+`APITimeoutError` occurrences in the post-restart log), giving 16/16
+combos × 5/5 seeds for both models... except `critique+planning+
+multi_critic` seed=1 came back `accuracy=nan`, not a real number.
+
+**Root cause: a different failure mode from the timeout stall — an
+unhandled `BadRequestError`, not a retry loop.** `read_eval_log()` on that
+seed's `.eval` file showed `status: error`, 164/198 samples completed
+before the whole run aborted. The embedded error was Together returning
+`400 - Input validation error` on one specific sample's request to
+`google/gemma-3n-E4B-it`. `critique+planning+multi_critic` builds the
+longest, most turn-heavy message sequence in the entire sweep (system →
+question → plan request → plan → "now answer" → critique → "revise" →
+...), and Together's request validation rejected one particular instance
+of it. Inspect's default behavior aborts the whole eval on the first
+unhandled sample exception rather than skipping just that sample, so one
+bad request cost the entire seed, not just one data point.
+`get_accuracy()`'s existing `except Exception: return nan` fallback (in
+`run_shapley_sweep.py`) is why this surfaced as a silent `nan` in the
+summary JSON instead of a visible crash — worth knowing, since it means
+future runs could have the same failure mode without an obvious error at
+the top level; only checking every accuracy value against `nan` (or
+reading `log.status` directly) surfaces it.
+
+**Reran just that one (config, seed) directly** — `elicit(suite="gpqa",
+critique=True, planning=True, multi_critic=True, critic_model=
+"together/Qwen/Qwen2.5-7B-Instruct-Turbo")`, `model="together/google/
+gemma-3n-E4B-it"`, `seed=1`, same params as the sweep — and patched the
+result into `results/shapley_sweep_gpqa_together-google-gemma-3n-e4b-
+it.json` in place. **Second attempt succeeded cleanly**: `status=success`,
+accuracy 0.263, in line with the combo's other 4 seeds (0.298-0.328). The
+400 didn't recur, which points to a transient Together-side issue on that
+specific request rather than a reproducible bug in how the solver
+composes messages for this component combination — but flagging it as a
+pattern to watch for if it happens again on a *different* sample, which
+would point at a real structural issue instead.
+
+**Both models' sweeps are now genuinely complete: 16/16 combos × 5/5
+seeds each**, for `Qwen2.5-7B-Instruct-Turbo`
+(`results/shapley_sweep_gpqa_together-qwen-qwen2.5-7b-instruct-turbo.json`)
+and `gemma-3n-E4B-it` (`results/shapley_sweep_gpqa_together-google-
+gemma-3n-e4b-it.json`). Next step is the Shapley attribution + interaction
+term computation over both files, per `run_shapley_sweep.py`'s own closing
+message — not yet built.
