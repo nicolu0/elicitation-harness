@@ -1433,6 +1433,70 @@ would point at a real structural issue instead.
 seeds each**, for `Qwen2.5-7B-Instruct-Turbo`
 (`results/shapley_sweep_gpqa_together-qwen-qwen2.5-7b-instruct-turbo.json`)
 and `gemma-3n-E4B-it` (`results/shapley_sweep_gpqa_together-google-
-gemma-3n-e4b-it.json`). Next step is the Shapley attribution + interaction
-term computation over both files, per `run_shapley_sweep.py`'s own closing
-message — not yet built.
+gemma-3n-e4b-it.json`).
+
+## Phase 10 (cont.) — Shapley attribution + pairwise interactions: built and run
+
+Built `shapley_attribution.py`. Reuses `TOGGLES`/`config_label()` from
+`run_shapley_sweep.py` directly rather than re-deriving the
+label<->component mapping — one source of truth, so the two scripts can't
+silently drift apart.
+
+**Why Shapley, not just the ablation deltas already in this log:** a raw
+bare-vs-single-component delta only measures a component's effect in one
+context (nothing else on). Whether critique helps depends on what else is
+active — the "critique adds nothing on top of cot, sits marginally below"
+pattern found by hand earlier (GSM8K, single-seed GPQA, pooled GPQA) is
+exactly a context-dependence effect. Shapley values average a
+component's marginal contribution over every possible context. With all
+2^4=16 coalitions actually measured (not sampled), the Shapley values and
+pairwise Grabisch-Roubens interaction indices computed here are exact,
+not estimated.
+
+**Uncertainty via bootstrap, not point estimates alone:** each of the 16
+coalitions has 5 real seeds. Resampled each coalition's 5 seeds with
+replacement, recomputed every Shapley value + interaction term, 5000
+iterations, took the 95% percentile CI. Efficiency property (Shapley
+values must sum to `v(full) - v(bare)`) verified exactly on the point
+estimate for both models before trusting anything downstream.
+
+**Headline results (GPQA, letter_match accuracy, all deltas in
+percentage points):**
+
+| component | Qwen2.5-7B Shapley | gemma-3n-E4B-it Shapley |
+|---|---|---|
+| critique | +0.22 (CI includes 0) | +0.08 (CI includes 0) |
+| tool_use | +0.08 (CI includes 0) | +0.55 (CI includes 0) |
+| planning | +0.37 (CI includes 0) | **-1.32 (CI excludes 0)** |
+| multi_critic | **-0.77 (CI excludes 0)** | **+1.20 (CI excludes 0)** |
+
+**Only two main effects clear the 95% CI on either model, and they're on
+*different* components in *opposite* directions** — `multi_critic` hurts
+Qwen (-0.77pts) but helps gemma (+1.20pts); `planning` hurts gemma
+(-1.32pts) but is noise for Qwen. Every pairwise interaction's CI
+includes 0 for both models — no confirmed synergy or conflict between any
+two components at this sample size, despite several point estimates
+looking suggestive (e.g. Qwen's critique×multi_critic +0.57pts, gemma's
+critique×multi_critic -1.14pts) — both consistent with zero given the CI
+width.
+
+**Reading this honestly: at n=198×5 seeds, only large single-component
+effects are distinguishable from noise, and even those don't transfer
+across models.** This is itself a real finding for the project's central
+question (does scaffold-component attribution transfer across models) —
+the answer on this data is "no, not even the sign transfers for the two
+components that *are* individually significant" — but it's a
+weaker-power result than the earlier pooled McNemar bare-vs-cot finding
+(p=0.04 off 275 disagreements), because Shapley values here are built
+from only 5 accuracy numbers per coalition rather than 198×5=990 paired
+sample-level outcomes. A McNemar-style paired test at the sample level
+(same idea as `mcnemar_test.py`, extended to the coalition-pair
+comparisons the interaction terms care about) would have more power than
+seed-level bootstrapping and is the natural next tightening if these
+numbers need to support a stronger claim than "no interaction survived at
+this power."
+
+Not yet done: same computation on a second suite (MATH/intermediate_algebra
+never got its own Shapley sweep, only the earlier 4-config ablation) to
+check whether the attribution pattern is suite-specific too, on top of
+already being model-specific.
