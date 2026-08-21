@@ -2144,3 +2144,80 @@ actively clearing their backlogs (58 and 51 respectively), and zero new
 fully resolved the underlying cause, and the resume-logic fix is
 correctly directing all recovery effort at exactly the entries that
 need it.
+
+## Balance ran out a SECOND time; real per-model cost data revealed gemma is carrying ~2-3x the invocation load of the other two models; DeepInfra Flex tier applied selectively
+
+**Second outage, caught while investigating an unrelated question** ("why
+does gemma seem slow"). Live smoke test confirmed a fresh `402` --
+balance had run out again, 34-35 occurrences already logged across all
+three sweeps by the time it was caught. User topped up again ($10) and
+asked for a cost estimate to finish, this time providing real DeepInfra
+billing figures directly rather than reconstructing from token counts:
+Qwen3-32B $9.26 spent (55.0% of total sample-work done), gemma $25.43
+(30.8% done), Qwen2.5-72B $15.23 (58.3% done). Extrapolating from real
+spend-per-percent-complete: **~$75.60 estimated to finish all three,
+against a $10 balance -- ~$65.60 in additional funds needed.**
+
+**Real finding, not obvious from pricing alone: gemma is the most
+expensive of the three despite having the CHEAPEST per-token price**
+($0.08/$0.16 vs Qwen3-32B's $0.08/$0.28 and Qwen2.5-72B's $0.36/$0.40).
+Root cause is invocation volume, not price: gemma-3-27b-it is the critic
+model for BOTH other sweeps (`MODEL_PAIR`'s critic column is gemma,
+Qwen3-32B, gemma), so it does primary work for its own 80-run sweep AND
+critic work for two other sweeps' `multi_critic` configs -- roughly 2-3x
+the total invocation count of Qwen2.5-72B (which is critic for no one)
+or Qwen3-32B (critic for gemma only). This was an unintended consequence
+of picking gemma as Qwen2.5-72B's critic for convenience (fast, cheap,
+already validated) when it was added as the third model, without
+weighing the cumulative effect of gemma serving double critic duty.
+
+**Looked for cost-cutting levers that don't change the experiment's
+design before accepting the $65.60 figure.** Checked whether any of the
+3 models support DeepInfra's `prompt_cache` tag (none do -- ruled out).
+Found DeepInfra's "Flex" service tier instead: 0.8x standard pricing,
+documented tradeoff of "slower responses and occasional unavailability,"
+explicitly positioned for "non-production and asynchronous work" -- a
+good match, since this sweep is already checkpointed/retry-resilient.
+No native `GenerateConfig` field for it; accessible via
+`extra_body={"service_tier": "flex"}`, same mechanism already used for
+`enable_thinking`.
+
+**Tested per-model before applying anywhere, not assumed uniform --
+good thing, since the result was NOT uniform:** gemma-3-27b-it and
+Qwen2.5-72B-Instruct both returned in ~1s on Flex tier. Qwen3-32B hit
+the documented "occasional unavailability" case badly: a single request
+took **1804 seconds (30 minutes)** before timing out. First test attempt
+(no explicit timeout) had to be killed after 21+ minutes with zero
+output before retrying with a bounded 30s timeout to get a clean
+answer -- confirms this needed live verification, not just trusting the
+docs' description of the tradeoff as universally mild.
+
+**Applied selectively, not globally.** Added `FLEX_TIER_MODELS` (gemma
+and Qwen2.5-72B only) and `extra_body_for(model_name)` to
+`run_shapley_sweep.py`, applied both where a model is the PRIMARY model
+being evaluated and where it's serving as CRITIC for another model's
+`multi_critic` runs (matters specifically because gemma's critic role is
+exactly where its invocation-volume problem lives). Verified the
+resulting per-model extra_body dict directly before relaunching: Qwen3-32B
+never gets `service_tier: flex` in either role, gemma and Qwen2.5-72B
+always do. Estimated savings: gemma $57.13 -> $45.70 remaining,
+Qwen2.5-72B $10.89 -> $8.71 remaining, Qwen3-32B unchanged at $7.58 --
+**new total remaining estimate ~$62 (down from $75.60)**, zero change to
+models, prompts, or measured behavior.
+
+**Also considered and explicitly declined (for now) a tool_use round-cap
+fix.** The repeated context-length failures on gemma's `tool_use` configs
+stem from the model looping on the same broken generated code many times
+without self-correcting, until the conversation balloons past the
+context window -- confirmed this is the same root cause behind the
+30-minute-plus wasted-time incidents. A cap on total tool-call rounds per
+sample would prevent the worst-case ballooning, but unlike the earlier
+`timeout=30` guard (which only bounds a single call's runaway execution,
+never changes normal behavior), a round cap would be a genuine, if
+narrow, change to what `tool_use` measures -- flagged to the user
+explicitly rather than treated as another free infrastructure fix;
+not implemented pending their decision.
+
+**Relaunched all three processes with both the nan-retry fix and the
+selective Flex tier fix together.** All three alive immediately after
+restart.

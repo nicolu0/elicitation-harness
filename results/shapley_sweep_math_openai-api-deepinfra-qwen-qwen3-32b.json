@@ -225,12 +225,6 @@
         "limit": 500
       },
       {
-        "seed": 3,
-        "accuracy": NaN,
-        "log": "/Users/nicoluo/dev/elicitation-harness/logs/2026-08-21T15-04-42-00-00_elicit_9nnEDutViVrK6wC7oQN9iK.eval",
-        "limit": 500
-      },
-      {
         "seed": 4,
         "accuracy": 0.47,
         "log": "/Users/nicoluo/dev/elicitation-harness/logs/2026-08-21T15-27-38-00-00_elicit_iEmS23BFF68BuHTZy3RkGr.eval",
@@ -240,6 +234,12 @@
         "seed": 5,
         "accuracy": 0.44,
         "log": "/Users/nicoluo/dev/elicitation-harness/logs/2026-08-21T15-40-01-00-00_elicit_gy5554Y6UwDw9ec4sVz32f.eval",
+        "limit": 500
+      },
+      {
+        "seed": 3,
+        "accuracy": 0.452,
+        "log": "/Users/nicoluo/dev/elicitation-harness/logs/2026-08-21T23-11-26-00-00_elicit_iJZsdRnp4Ed7EGTL5wVdyS.eval",
         "limit": 500
       }
     ],
@@ -251,21 +251,9 @@
         "limit": 250
       },
       {
-        "seed": 2,
-        "accuracy": NaN,
-        "log": "/Users/nicoluo/dev/elicitation-harness/logs/2026-08-21T16-33-34-00-00_elicit_Qhuebg53cy9LidZ2hYwXw9.eval",
-        "limit": 250
-      },
-      {
         "seed": 3,
         "accuracy": 0.488,
         "log": "/Users/nicoluo/dev/elicitation-harness/logs/2026-08-21T16-50-59-00-00_elicit_j7uLqLV3ksHim4ZtnGY46v.eval",
-        "limit": 250
-      },
-      {
-        "seed": 4,
-        "accuracy": NaN,
-        "log": "/Users/nicoluo/dev/elicitation-harness/logs/2026-08-21T17-09-42-00-00_elicit_Ug2hXgDuUdBULNwMCRtxxU.eval",
         "limit": 250
       },
       {
@@ -286,6 +274,24 @@
         "seed": 2,
         "accuracy": 0.418,
         "log": "/Users/nicoluo/dev/elicitation-harness/logs/2026-08-21T18-26-20-00-00_elicit_Xd5cpsDPJZcSS4A2bNnsdz.eval",
+        "limit": 500
+      },
+      {
+        "seed": 3,
+        "accuracy": 0.41,
+        "log": "/Users/nicoluo/dev/elicitation-harness/logs/2026-08-21T18-44-31-00-00_elicit_8Te9PN8Lk5FcjZWGQSiV8T.eval",
+        "limit": 500
+      },
+      {
+        "seed": 4,
+        "accuracy": 0.4,
+        "log": "/Users/nicoluo/dev/elicitation-harness/logs/2026-08-21T18-59-46-00-00_elicit_2Yrp56tSxtapjvxX8ttC7g.eval",
+        "limit": 500
+      },
+      {
+        "seed": 5,
+        "accuracy": 0.468,
+        "log": "/Users/nicoluo/dev/elicitation-harness/logs/2026-08-21T19-14-46-00-00_elicit_HEerefuMQAKHnsbSZKAv2x.eval",
         "limit": 500
       }
     ],

@@ -104,6 +104,28 @@ MAX_TOKENS = 4096
 # with the same correct answer. Confirmed harmless on gemma-3-27b-it too
 # (extra fields are just ignored), so applied to every model uniformly.
 EXTRA_BODY = {"chat_template_kwargs": {"enable_thinking": False}}
+# DeepInfra's "Flex" service tier (0.8x standard pricing, in exchange for
+# "slower responses and occasional unavailability" -- explicitly meant
+# for non-production/async work, which this sweep is) -- confirmed live
+# per-model before applying anywhere, not assumed uniform: gemma-3-27b-it
+# and Qwen2.5-72B-Instruct both returned in ~1s on Flex; Qwen3-32B hit
+# the "occasional unavailability" case hard -- a single request took
+# 1804s (30 min) before timing out. Applied selectively, not globally,
+# for exactly this reason. Applies both when a model is the PRIMARY
+# model being evaluated and when it's serving as the CRITIC for another
+# model's multi_critic runs (gemma is critic for both other sweeps, so
+# this matters for its critic role too, not just its own sweep).
+FLEX_TIER_MODELS = {
+    "openai-api/deepinfra/google/gemma-3-27b-it",
+    "openai-api/deepinfra/Qwen/Qwen2.5-72B-Instruct",
+}
+
+
+def extra_body_for(model_name: str) -> dict:
+    body = dict(EXTRA_BODY)
+    if model_name in FLEX_TIER_MODELS:
+        body["service_tier"] = "flex"
+    return body
 
 # (model string, critic model string for THIS model's multi_critic runs)
 # DeepInfra, not Together -- switched for cost (see process_log.md's
@@ -262,7 +284,7 @@ def run_for_model(model: str, critic_model: str):
                 # same overflow bug fixed for the primary model (see
                 # elicit_task.py's multi_critic() docstring).
                 kwargs["critic_config"] = GenerateConfig(
-                    max_tokens=MAX_TOKENS, extra_body=EXTRA_BODY,
+                    max_tokens=MAX_TOKENS, extra_body=extra_body_for(critic_model),
                 )
                 run_limit = MULTI_CRITIC_LIMIT
             log = inspect_eval(
@@ -274,7 +296,7 @@ def run_for_model(model: str, critic_model: str):
                 log_dir="./logs",
                 max_connections=MAX_CONNECTIONS,
                 max_tokens=MAX_TOKENS,
-                extra_body=EXTRA_BODY,
+                extra_body=extra_body_for(model),
             )[0]
             acc = get_accuracy(log)
             log_path = str(log.location) if hasattr(log, "location") else None
