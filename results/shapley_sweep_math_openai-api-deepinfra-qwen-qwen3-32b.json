@@ -1,0 +1,133 @@
+{
+  "model": "openai-api/deepinfra/Qwen/Qwen3-32B",
+  "critic_model": "openai-api/deepinfra/google/gemma-3-27b-it",
+  "suite": "math",
+  "limit": 500,
+  "multi_critic_limit": 250,
+  "temperature": 0.7,
+  "seeds": [
+    1,
+    2,
+    3,
+    4,
+    5
+  ],
+  "components": [
+    "critique",
+    "tool_use",
+    "planning",
+    "multi_critic"
+  ],
+  "results": {
+    "bare": [
+      {
+        "seed": 1,
+        "accuracy": 0.562,
+        "log": "/Users/nicoluo/dev/elicitation-harness/logs/2026-08-20T23-02-25-00-00_elicit_C4X3jFumNLhPPVpUR6MxDS.eval",
+        "limit": 500
+      },
+      {
+        "seed": 2,
+        "accuracy": 0.546,
+        "log": "/Users/nicoluo/dev/elicitation-harness/logs/2026-08-20T23-10-15-00-00_elicit_DiqSwPykaauHiAwBskjrFW.eval",
+        "limit": 500
+      },
+      {
+        "seed": 3,
+        "accuracy": 0.572,
+        "log": "/Users/nicoluo/dev/elicitation-harness/logs/2026-08-20T23-18-39-00-00_elicit_QQ4rf5yrUJPxHEp5F3u9UL.eval",
+        "limit": 500
+      },
+      {
+        "seed": 4,
+        "accuracy": 0.558,
+        "log": "/Users/nicoluo/dev/elicitation-harness/logs/2026-08-20T23-25-22-00-00_elicit_ispbKLZ8LBQmph68om43ZL.eval",
+        "limit": 500
+      },
+      {
+        "seed": 5,
+        "accuracy": 0.582,
+        "log": "/Users/nicoluo/dev/elicitation-harness/logs/2026-08-20T23-32-21-00-00_elicit_i29ztUCuAyVkL9729Mefwr.eval",
+        "limit": 500
+      }
+    ],
+    "multi_critic": [
+      {
+        "seed": 1,
+        "accuracy": 0.536,
+        "log": "/Users/nicoluo/dev/elicitation-harness/logs/2026-08-20T23-39-53-00-00_elicit_3fCfrDFBpuYhnuZVjcxWWK.eval",
+        "limit": 250
+      },
+      {
+        "seed": 2,
+        "accuracy": 0.488,
+        "log": "/Users/nicoluo/dev/elicitation-harness/logs/2026-08-20T23-57-41-00-00_elicit_AoFGTCLJtsoUJBwiJwYkz3.eval",
+        "limit": 250
+      },
+      {
+        "seed": 3,
+        "accuracy": 0.468,
+        "log": "/Users/nicoluo/dev/elicitation-harness/logs/2026-08-21T00-09-46-00-00_elicit_beUZGLJBCUDyFy3CXJHWXL.eval",
+        "limit": 250
+      },
+      {
+        "seed": 4,
+        "accuracy": 0.496,
+        "log": "/Users/nicoluo/dev/elicitation-harness/logs/2026-08-21T00-23-05-00-00_elicit_nMkrScZJ8LznPQon96NhHP.eval",
+        "limit": 250
+      },
+      {
+        "seed": 5,
+        "accuracy": 0.516,
+        "log": "/Users/nicoluo/dev/elicitation-harness/logs/2026-08-21T00-35-20-00-00_elicit_KXVdLXQsG8Ngpaaziq4dLe.eval",
+        "limit": 250
+      }
+    ],
+    "planning": [
+      {
+        "seed": 1,
+        "accuracy": 0.564,
+        "log": "/Users/nicoluo/dev/elicitation-harness/logs/2026-08-21T00-46-53-00-00_elicit_KShLWYMdoBy9yPFMZjgx82.eval",
+        "limit": 500
+      },
+      {
+        "seed": 2,
+        "accuracy": 0.588,
+        "log": "/Users/nicoluo/dev/elicitation-harness/logs/2026-08-21T00-54-58-00-00_elicit_Sfp54ST4HKgK6eYVXfds4g.eval",
+        "limit": 500
+      },
+      {
+        "seed": 3,
+        "accuracy": 0.588,
+        "log": "/Users/nicoluo/dev/elicitation-harness/logs/2026-08-21T01-02-53-00-00_elicit_7YbhuUM7bNAcHr4uG5Yk8M.eval",
+        "limit": 500
+      },
+      {
+        "seed": 4,
+        "accuracy": 0.594,
+        "log": "/Users/nicoluo/dev/elicitation-harness/logs/2026-08-21T01-10-22-00-00_elicit_3vwVbuYEottB8v3gMyV3e9.eval",
+        "limit": 500
+      },
+      {
+        "seed": 5,
+        "accuracy": 0.564,
+        "log": "/Users/nicoluo/dev/elicitation-harness/logs/2026-08-21T01-17-48-00-00_elicit_Dh9CjrAhgiHcSzf4AwGUqN.eval",
+        "limit": 500
+      }
+    ],
+    "planning+multi_critic": [
+      {
+        "seed": 1,
+        "accuracy": 0.528,
+        "log": "/Users/nicoluo/dev/elicitation-harness/logs/2026-08-21T03-34-12-00-00_elicit_UBaHY7yZdET5XxSuxgLn8e.eval",
+        "limit": 250
+      },
+      {
+        "seed": 2,
+        "accuracy": 0.548,
+        "log": "/Users/nicoluo/dev/elicitation-harness/logs/2026-08-21T03-47-49-00-00_elicit_RWAu6t6vUAsPFdrfjqHCHJ.eval",
+        "limit": 250
+      }
+    ]
+  }
+}

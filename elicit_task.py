@@ -43,7 +43,7 @@ from typing import Callable
 from inspect_ai import Task, task
 from inspect_ai.dataset import Dataset, Sample, hf_dataset
 from inspect_ai.scorer import Score, Scorer, Target, scorer, accuracy, stderr
-from inspect_ai.model import ChatMessageUser
+from inspect_ai.model import ChatMessageUser, GenerateConfig, get_model
 from inspect_ai.solver import (
     Generate,
     Solver,
@@ -185,7 +185,10 @@ def planning() -> Solver:
     return solve
 
 
-def multi_critic(critic_model: str | None = None) -> Solver:
+@solver
+def multi_critic(
+    critic_model: str | None = None, critic_config: GenerateConfig | None = None,
+) -> Solver:
     """`multi_critic`: a critic model reviews and revises the primary
     model's answer -- Inspect's own `self_critique()` already supports an
     alternate `model=` for exactly this (no need to hand-roll a
@@ -209,8 +212,37 @@ def multi_critic(critic_model: str | None = None) -> Solver:
     Note: the default completion template asks for "ANSWER: $ANSWER" on
     its own line -- matches GPQA's letter_match scorer (the suite this
     study actually targets); would need a custom completion_template to
-    fit MATH's \\boxed{} format if this ever runs there instead."""
-    return self_critique(model=critic_model)
+    fit MATH's \\boxed{} format if this ever runs there instead.
+
+    `critic_config`: generation config for the critic model specifically.
+    `self_critique(model=critic_model)` resolves a bare model-name string
+    via `get_model(critic_model)` with NO config -- meaning it silently
+    ignores whatever max_tokens/extra_body the eval-level `inspect_eval()`
+    call set for the PRIMARY model, and falls back to that critic model's
+    raw server default. Found the hard way: gemma's multi_critic runs
+    against Qwen3-32B-as-critic hit the exact same max_tokens=65536-
+    exceeds-40960-context error that had already been fixed for Qwen3-32B
+    as a primary model (see process_log.md's "switch to DeepInfra" entry)
+    -- the fix never propagated to the critic-model path because it's a
+    separate, unconfigured get_model() call.
+
+    This function is itself `@solver`-decorated (unlike the version that
+    shipped originally) specifically so the `get_model(critic_model,
+    config=critic_config)` call below happens LAZILY, inside `solve()`, at
+    actual generation time -- not eagerly when `multi_critic()` is called
+    while `build_solver()` constructs the Task. Resolving it eagerly (the
+    first attempt at this fix) broke immediately: `elicit(...)` runs
+    before `inspect_eval()` has had a chance to load `.env`, so
+    `get_model()` raised `PrerequisiteError: No DEEPINFRA_API_KEY defined`
+    on the very first call. `self_critique()`'s own `model` resolution
+    already happens lazily inside its `solve()` for exactly this reason;
+    this wrapper has to match that, not shortcut it."""
+    async def solve(state: TaskState, generate: Generate) -> TaskState:
+        critic = get_model(critic_model, config=critic_config) if critic_model else None
+        inner = self_critique(model=critic)
+        return await inner(state, generate)
+
+    return solve
 
 
 # --------------------------------------------------------------------------
@@ -221,6 +253,7 @@ def build_solver(
     cot: bool, critique: bool, system_prompt: str,
     tool_use: bool = False, use_retrieval: bool = False, use_planning: bool = False,
     use_multi_critic: bool = False, critic_model: str | None = None,
+    critic_config: GenerateConfig | None = None,
 ):
     steps = [system_message(system_prompt)]
     # retrieval dropped for now -- see "Retrieval component" comment block
@@ -236,12 +269,21 @@ def build_solver(
         # Inspect's generate() handles the tool-call/tool-result loop
         # automatically once a tool is registered via use_tools() -- no
         # extra looping logic needed here.
-        steps.append(use_tools(python()))
+        #
+        # timeout=30 mirrors the guard already used for humaneval's own
+        # sandboxed code_execution_match (see that scorer's comment) --
+        # found the hard way this component needed it too: a MATH pilot
+        # run hit a real infinite loop inside the sandbox that ran
+        # unbounded for 9+ hours before being noticed and killed
+        # manually (see process_log.md's "runaway tool_use process"
+        # entry). python()'s own timeout kwarg was always there; it was
+        # just never passed.
+        steps.append(use_tools(python(timeout=30)))
     steps.append(generate())
     if critique:
         steps.append(self_critique())
     if use_multi_critic:
-        steps.append(multi_critic(critic_model))
+        steps.append(multi_critic(critic_model, critic_config))
     return steps
 
 
@@ -772,6 +814,7 @@ def elicit(
     suite: str = "math", cot: bool = False, critique: bool = False,
     tool_use: bool = False, retrieval: bool = False, planning: bool = False,
     multi_critic: bool = False, critic_model: str | None = None,
+    critic_config: GenerateConfig | None = None,
 ):
     if suite not in ADAPTERS:
         raise ValueError(
@@ -794,6 +837,7 @@ def elicit(
             cot, critique, adapter.system_prompt, tool_use,
             use_retrieval=retrieval, use_planning=planning,
             use_multi_critic=multi_critic, critic_model=critic_model,
+            critic_config=critic_config,
         ),
         scorer=adapter.scorer(),
         sandbox=sandbox,

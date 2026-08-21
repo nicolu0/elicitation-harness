@@ -1,0 +1,100 @@
+{
+  "model": "openai-api/deepinfra/Qwen/Qwen2.5-72B-Instruct",
+  "critic_model": "openai-api/deepinfra/google/gemma-3-27b-it",
+  "suite": "math",
+  "math_subject": "intermediate_algebra",
+  "limit": 40,
+  "temperature": 0.7,
+  "seeds": [
+    1,
+    2,
+    3
+  ],
+  "results": {
+    "bare": [
+      {
+        "seed": 1,
+        "accuracy": 0.375,
+        "log": "/Users/nicoluo/dev/elicitation-harness/logs/2026-08-21T01-06-51-00-00_elicit_eCkUTu6wTAF9VRBXR6yzSP.eval"
+      },
+      {
+        "seed": 2,
+        "accuracy": 0.375,
+        "log": "/Users/nicoluo/dev/elicitation-harness/logs/2026-08-21T01-06-56-00-00_elicit_hHfDNfQVfeaeEezYo82Rg3.eval"
+      },
+      {
+        "seed": 3,
+        "accuracy": 0.35,
+        "log": "/Users/nicoluo/dev/elicitation-harness/logs/2026-08-21T01-07-00-00-00_elicit_4UvjkxMjexdqVRvo6x5Nc7.eval"
+      }
+    ],
+    "critique": [
+      {
+        "seed": 1,
+        "accuracy": 0.425,
+        "log": "/Users/nicoluo/dev/elicitation-harness/logs/2026-08-21T01-07-04-00-00_elicit_azDZKb5jGFh7fXzV9sTuoX.eval"
+      },
+      {
+        "seed": 2,
+        "accuracy": 0.475,
+        "log": "/Users/nicoluo/dev/elicitation-harness/logs/2026-08-21T01-08-45-00-00_elicit_RvtEjnUUB7hHHreAmo4s7K.eval"
+      },
+      {
+        "seed": 3,
+        "accuracy": 0.425,
+        "log": "/Users/nicoluo/dev/elicitation-harness/logs/2026-08-21T01-10-03-00-00_elicit_DnbFg3P2YC9qkJ6EATBBNw.eval"
+      }
+    ],
+    "tool_use": [
+      {
+        "seed": 1,
+        "accuracy": 0.25,
+        "log": "/Users/nicoluo/dev/elicitation-harness/logs/2026-08-21T01-11-33-00-00_elicit_Bjb4qvMekfRPKpxiKBEmzS.eval"
+      },
+      {
+        "seed": 2,
+        "accuracy": 0.375,
+        "log": "/Users/nicoluo/dev/elicitation-harness/logs/2026-08-21T01-14-16-00-00_elicit_PKbPMzQHwJPEvk2rx6q6iL.eval"
+      },
+      {
+        "seed": 3,
+        "accuracy": 0.375,
+        "log": "/Users/nicoluo/dev/elicitation-harness/logs/2026-08-21T01-16-21-00-00_elicit_K9KazxXgWoKVbnwN2y29HW.eval"
+      }
+    ],
+    "planning": [
+      {
+        "seed": 1,
+        "accuracy": 0.35,
+        "log": "/Users/nicoluo/dev/elicitation-harness/logs/2026-08-21T01-19-13-00-00_elicit_Ad4NUrLYXVNww8aJsfCkQc.eval"
+      },
+      {
+        "seed": 2,
+        "accuracy": 0.325,
+        "log": "/Users/nicoluo/dev/elicitation-harness/logs/2026-08-21T01-19-37-00-00_elicit_m6X82tx6bfbkG6LQFS5tba.eval"
+      },
+      {
+        "seed": 3,
+        "accuracy": 0.4,
+        "log": "/Users/nicoluo/dev/elicitation-harness/logs/2026-08-21T01-20-04-00-00_elicit_RRPQFNnKVJtynzRsTbuEY2.eval"
+      }
+    ],
+    "multi_critic": [
+      {
+        "seed": 1,
+        "accuracy": 0.475,
+        "log": "/Users/nicoluo/dev/elicitation-harness/logs/2026-08-21T01-20-31-00-00_elicit_igYauqwuFUsj69UedHpu9G.eval"
+      },
+      {
+        "seed": 2,
+        "accuracy": 0.575,
+        "log": "/Users/nicoluo/dev/elicitation-harness/logs/2026-08-21T03-34-44-00-00_elicit_Cifm8M9q2PEDQAwzNA8h7w.eval"
+      },
+      {
+        "seed": 3,
+        "accuracy": 0.525,
+        "log": "/Users/nicoluo/dev/elicitation-harness/logs/2026-08-21T03-42-08-00-00_elicit_NSytCSgF4Rj9cNHc9dGHCG.eval"
+      }
+    ]
+  }
+}

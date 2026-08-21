@@ -39,22 +39,111 @@ Usage:
 
 import itertools
 import json
+import sys
 from pathlib import Path
 
 from inspect_ai import eval as inspect_eval
+from inspect_ai.model import GenerateConfig
 
 from elicit_task import elicit
 
-SUITE = "gpqa"
-LIMIT = 198  # GPQA Diamond's full set -- hard-capped, raising this does nothing
+SUITE = "math"
+LIMIT = 500  # intermediate_algebra has 903 available -- not capped like GPQA
+# Targeted budget cut for the 8 of 16 configs with multi_critic=True --
+# these are both the slowest runs in the sweep (multi_critic calls a
+# SECOND model) and the one place power_analysis.py already showed the
+# budget was disproportionate: Qwen's multi_critic main effect needs
+# N=7416 (unreachable at ANY sane budget, full or cut) while gemma's
+# needs only N=587. n=250 x 5 seeds = 1250 clears gemma's requirement
+# with 2x margin, costs nothing on Qwen's (already unreachable at 2500
+# too), and is still a real, non-trivial sample size for every
+# interaction term that touches multi_critic. Applied to BOTH models
+# uniformly (not just Qwen, which is the one that actually needed it) --
+# never let generation config, including sample size, differ between
+# directly-compared configs. See process_log.md's "cutting the sweep
+# further" entry for the full reasoning and the required-N numbers this
+# was checked against.
+MULTI_CRITIC_LIMIT = 250
 TEMPERATURE = 0.7
 SEEDS = [1, 2, 3, 4, 5]
-MAX_CONNECTIONS = 5  # see run_ablation.py's own comment on why this is capped
+# 20, not the original 5 -- that value was calibrated against an OpenAI
+# rate-limit incident (see process_log.md's "gpt-4o-mini MATH ablation"
+# entry) that has nothing to do with DeepInfra's actual limits.
+# Re-tested live rather than carried forward by habit: a 40-sample MATH
+# run took 142.8s at max_connections=5, 94.0s at 20 (~1.5x faster), 103.1s
+# at 40 (no further gain -- likely DeepInfra's own throughput ceiling,
+# not our client-side limit). See process_log.md's runtime-investigation
+# entry for the full story (this alone doesn't fix a 12-day sweep --
+# running both models as separate parallel processes is the other half).
+MAX_CONNECTIONS = 20
+# Qwen3-32B (DeepInfra) defaults to max_tokens=65536, which exceeds its own
+# 40960-token context window and 400s on every call unless capped explicitly
+# -- found via a live smoke test before trusting anything (see
+# process_log.md's "switch to DeepInfra" entry). 4096 comfortably covers
+# every real per-turn output size measured so far on either suite (MATH's
+# heaviest single-turn cot+critique data point was ~1725 tokens) and is
+# applied uniformly to every model, not just the one that needed it --
+# never let generation config differ between compared configs/models.
+MAX_TOKENS = 4096
+# Qwen3-32B has an internal "thinking" mode that fires on hard questions
+# regardless of the system prompt's "do not explain your reasoning"
+# instruction -- found via transcript inspection, not just the aggregate
+# accuracy number, which looked fine on its own: a 20-sample GPQA pilot
+# showed 2 of 8 inspected samples burning the full max_tokens budget on
+# hidden reasoning with ZERO visible answer (real no-answer failures an
+# earlier automated check incorrectly reported as 0/20), one sample
+# leaking reasoning into the visible text AND breaking the required
+# "ANSWER: X" format, and reasoning blocks up to 16,319 chars on samples
+# that did produce a clean answer -- the same class of problem that got
+# Qwen3.5-9B rejected earlier in this project (see process_log.md's
+# "Qwen3.5-9B turned out to be unusable" entry), just less visible in the
+# top-line accuracy. `chat_template_kwargs: {"enable_thinking": False}`
+# (the standard vLLM/Qwen3 convention, confirmed working via a direct
+# smoke test even though DeepInfra's own docs don't mention it) fixes
+# this: output tokens on the same hard question dropped from 1977 to 5
+# with the same correct answer. Confirmed harmless on gemma-3-27b-it too
+# (extra fields are just ignored), so applied to every model uniformly.
+EXTRA_BODY = {"chat_template_kwargs": {"enable_thinking": False}}
 
 # (model string, critic model string for THIS model's multi_critic runs)
+# DeepInfra, not Together -- switched for cost (see process_log.md's
+# "switch to DeepInfra" entry). Neither original model (Qwen2.5-7B-
+# Instruct-Turbo, gemma-3n-E4B-it) exists on DeepInfra's catalog, so this
+# is a genuine model-selection redo, not a drop-in provider swap -- picked
+# deliberately larger models (32B/27B, still cheap on DeepInfra) to also
+# test the standing "maybe small models can't use these components"
+# hypothesis from GPQA's null result.
+# Tried microsoft/phi-4 (14B) as a third leg for a 3-tier scale
+# comparison -- rejected: DeepInfra returns a hard 405
+# "Tool calling is not supported for model: microsoft/phi-4" the moment
+# tool_use=True is invoked, which blocks 8 of the 16 configs outright.
+# Not a fixable bug, a real capability gap. See process_log.md's
+# "phi-4 rejected -- no tool-calling support" entry.
+#
+# Also tried meta-llama/Llama-3.3-70B-Instruct-Turbo -- clean behavior
+# and passes tool-calling, but a controlled n=20 timing test (same
+# conditions as everything else here) showed it at 102.5s vs Qwen3-32B's
+# 44.9s -- i.e. SLOWER than the current bottleneck, not comparable to it
+# (an earlier, uncontrolled comparison had incorrectly suggested they
+# were similar speed -- corrected after the user pushed back and asked
+# for a real apples-to-apples test). Adding it as a third leg would have
+# made the whole sweep slower, not just added a data point. Rejected for
+# that reason, not a capability problem.
+#
+# Qwen/Qwen2.5-72B-Instruct passed every check: tool-calling confirmed
+# working, controlled n=20 timing at 12.2s (faster than BOTH models
+# already running, so it won't become the bottleneck), clean transcripts
+# (proper \boxed{} only, no hidden reasoning -- same non-reasoning
+# generation as our very first validated model, Qwen2.5-7B), and real
+# headroom (0.300-0.350 across two separate n=20 checks). 72B is a
+# genuine third scale tier against the 27B/32B pair already running.
+# Critic model is gemma-3-27b-it, same reasoning as phi-4's attempt: fast,
+# cheap, already validated, doesn't require touching the two sweeps
+# already in progress.
 MODEL_PAIR = [
-    ("together/Qwen/Qwen2.5-7B-Instruct-Turbo", "together/google/gemma-3n-E4B-it"),
-    ("together/google/gemma-3n-E4B-it", "together/Qwen/Qwen2.5-7B-Instruct-Turbo"),
+    ("openai-api/deepinfra/Qwen/Qwen3-32B", "openai-api/deepinfra/google/gemma-3-27b-it"),
+    ("openai-api/deepinfra/google/gemma-3-27b-it", "openai-api/deepinfra/Qwen/Qwen3-32B"),
+    ("openai-api/deepinfra/Qwen/Qwen2.5-72B-Instruct", "openai-api/deepinfra/google/gemma-3-27b-it"),
 ]
 
 TOGGLES = ["critique", "tool_use", "planning", "multi_critic"]
@@ -87,12 +176,18 @@ def _save_summary(summary_path: Path, model: str, critic_model: str, results: di
                 "critic_model": critic_model,
                 "suite": SUITE,
                 "limit": LIMIT,
+                # multi_critic configs run at a smaller n -- see
+                # MULTI_CRITIC_LIMIT's comment above for why. Each run's
+                # actual n is recorded per-entry below (not just implied by
+                # this default), since it now varies by config.
+                "multi_critic_limit": MULTI_CRITIC_LIMIT,
                 "temperature": TEMPERATURE,
                 "seeds": SEEDS,
                 "components": TOGGLES,
                 "results": {
                     label: [
-                        {"seed": s, "accuracy": a, "log": p} for s, a, p in runs
+                        {"seed": s, "accuracy": a, "log": p, "limit": n}
+                        for s, a, p, n in runs
                     ]
                     for label, runs in results.items()
                 },
@@ -113,7 +208,14 @@ def run_for_model(model: str, critic_model: str):
         with open(summary_path) as f:
             prior = json.load(f)
         for label, runs in prior.get("results", {}).items():
-            results[label] = [(r["seed"], r["accuracy"], r["log"]) for r in runs]
+            # r.get("limit", LIMIT): entries saved before this per-config
+            # limit existed don't have the field -- they were genuinely all
+            # run at the (then-uniform) LIMIT, so that's the correct
+            # fallback, not a guess.
+            results[label] = [
+                (r["seed"], r["accuracy"], r["log"], r.get("limit", LIMIT))
+                for r in runs
+            ]
             for r in runs:
                 done.add((label, r["seed"]))
         if done:
@@ -131,21 +233,34 @@ def run_for_model(model: str, critic_model: str):
                 print(f"{label:24s} seed={seed}  SKIPPED (already in {summary_path})")
                 continue
             kwargs = dict(cfg)
+            run_limit = LIMIT
             if kwargs.get("multi_critic"):
                 kwargs["critic_model"] = critic_model
+                # self_critique(model=critic_model) resolves the critic via
+                # its own unconfigured get_model() call, so it never
+                # inherits inspect_eval()'s max_tokens/extra_body below --
+                # has to be passed separately or the critic model hits the
+                # same overflow bug fixed for the primary model (see
+                # elicit_task.py's multi_critic() docstring).
+                kwargs["critic_config"] = GenerateConfig(
+                    max_tokens=MAX_TOKENS, extra_body=EXTRA_BODY,
+                )
+                run_limit = MULTI_CRITIC_LIMIT
             log = inspect_eval(
                 elicit(suite=SUITE, **kwargs),
                 model=model,
-                limit=LIMIT,
+                limit=run_limit,
                 temperature=TEMPERATURE,
                 seed=seed,
                 log_dir="./logs",
                 max_connections=MAX_CONNECTIONS,
+                max_tokens=MAX_TOKENS,
+                extra_body=EXTRA_BODY,
             )[0]
             acc = get_accuracy(log)
             log_path = str(log.location) if hasattr(log, "location") else None
-            results[label].append((seed, acc, log_path))
-            print(f"{label:24s} seed={seed}  accuracy={acc:.3f}  log={log_path}")
+            results[label].append((seed, acc, log_path, run_limit))
+            print(f"{label:24s} seed={seed}  accuracy={acc:.3f}  n={run_limit}  log={log_path}")
             _save_summary(summary_path, model, critic_model, results)
 
     _save_summary(summary_path, model, critic_model, results)
@@ -153,13 +268,29 @@ def run_for_model(model: str, critic_model: str):
 
 
 def main():
-    print(f"{len(CONFIGS)} configs x {len(SEEDS)} seeds x {len(MODEL_PAIR)} models "
-          f"= {len(CONFIGS) * len(SEEDS) * len(MODEL_PAIR)} total runs\n")
-    for model, critic_model in MODEL_PAIR:
+    # Optional sys.argv[1] = 0 or 1 selects a single model from MODEL_PAIR
+    # to run in THIS process, so two separate OS processes (launched
+    # separately, e.g. `python run_shapley_sweep.py 0` and `... 1`) can run
+    # concurrently -- each with its own independent Inspect runtime state.
+    # Confirmed live that running two models this way works cleanly (no
+    # rate-limit conflicts): Inspect's `eval_async` explicitly forbids
+    # concurrent calls WITHIN one process ("Multiple concurrent calls to
+    # eval_async are not allowed"), which is why this is two processes,
+    # not asyncio concurrency inside a single run of this script. No arg
+    # (the default) runs both models sequentially in this one process, as
+    # before.
+    if len(sys.argv) > 1:
+        pairs = [MODEL_PAIR[int(sys.argv[1])]]
+    else:
+        pairs = MODEL_PAIR
+
+    print(f"{len(CONFIGS)} configs x {len(SEEDS)} seeds x {len(pairs)} model(s) "
+          f"= {len(CONFIGS) * len(SEEDS) * len(pairs)} total runs\n")
+    for model, critic_model in pairs:
         run_for_model(model, critic_model)
-    print("\nBoth models done. Next: Shapley attribution + interaction term "
-          "computation over each model's results/shapley_sweep_gpqa_*.json "
-          "(Phase 10 -- not yet built).")
+    print("\nDone. Next: Shapley attribution + interaction term "
+          "computation over each model's results/shapley_sweep_"
+          f"{SUITE}_*.json (shapley_attribution.py).")
 
 
 if __name__ == "__main__":

@@ -1,0 +1,151 @@
+{
+  "model": "openai-api/deepinfra/google/gemma-3-27b-it",
+  "critic_model": "openai-api/deepinfra/Qwen/Qwen3-32B",
+  "suite": "math",
+  "limit": 500,
+  "multi_critic_limit": 250,
+  "temperature": 0.7,
+  "seeds": [
+    1,
+    2,
+    3,
+    4,
+    5
+  ],
+  "components": [
+    "critique",
+    "tool_use",
+    "planning",
+    "multi_critic"
+  ],
+  "results": {
+    "bare": [
+      {
+        "seed": 1,
+        "accuracy": 0.206,
+        "log": "/Users/nicoluo/dev/elicitation-harness/logs/2026-08-20T22-52-33-00-00_elicit_MjJmiBuLHfJ49DScv3jJ2Z.eval",
+        "limit": 500
+      },
+      {
+        "seed": 2,
+        "accuracy": 0.214,
+        "log": "/Users/nicoluo/dev/elicitation-harness/logs/2026-08-20T22-53-00-00-00_elicit_6ABuA3tbunXgvjrvjR79Ng.eval",
+        "limit": 500
+      },
+      {
+        "seed": 3,
+        "accuracy": 0.204,
+        "log": "/Users/nicoluo/dev/elicitation-harness/logs/2026-08-20T22-53-32-00-00_elicit_dBA7ytBG9RVXBgWN4tXVwp.eval",
+        "limit": 500
+      },
+      {
+        "seed": 4,
+        "accuracy": 0.21,
+        "log": "/Users/nicoluo/dev/elicitation-harness/logs/2026-08-20T22-54-02-00-00_elicit_3np4ciY3zqdeHsFPb2izSX.eval",
+        "limit": 500
+      },
+      {
+        "seed": 5,
+        "accuracy": 0.206,
+        "log": "/Users/nicoluo/dev/elicitation-harness/logs/2026-08-20T22-54-32-00-00_elicit_Fi6NaJHJDvZRgg9F5MhrZn.eval",
+        "limit": 500
+      }
+    ],
+    "multi_critic": [
+      {
+        "seed": 1,
+        "accuracy": 0.224,
+        "log": "/Users/nicoluo/dev/elicitation-harness/logs/2026-08-20T22-54-58-00-00_elicit_dPizXijpjaoyG6UrsvRS7s.eval",
+        "limit": 500
+      },
+      {
+        "seed": 2,
+        "accuracy": 0.248,
+        "log": "/Users/nicoluo/dev/elicitation-harness/logs/2026-08-20T23-02-25-00-00_elicit_5oynQ3833kgQPA3FbnvtZ8.eval",
+        "limit": 250
+      },
+      {
+        "seed": 3,
+        "accuracy": 0.232,
+        "log": "/Users/nicoluo/dev/elicitation-harness/logs/2026-08-20T23-03-26-00-00_elicit_Xdhh4vtqBoDXibkficKvuq.eval",
+        "limit": 250
+      },
+      {
+        "seed": 4,
+        "accuracy": 0.228,
+        "log": "/Users/nicoluo/dev/elicitation-harness/logs/2026-08-20T23-04-22-00-00_elicit_Fh45YLPnaNuCoMYhBneYCc.eval",
+        "limit": 250
+      },
+      {
+        "seed": 5,
+        "accuracy": 0.232,
+        "log": "/Users/nicoluo/dev/elicitation-harness/logs/2026-08-20T23-05-20-00-00_elicit_4fhc79ZZbSaKhV8eGbEr3d.eval",
+        "limit": 250
+      }
+    ],
+    "planning": [
+      {
+        "seed": 1,
+        "accuracy": 0.358,
+        "log": "/Users/nicoluo/dev/elicitation-harness/logs/2026-08-20T23-06-15-00-00_elicit_idNPA36v23RcoG7sQzV6E3.eval",
+        "limit": 500
+      },
+      {
+        "seed": 2,
+        "accuracy": 0.324,
+        "log": "/Users/nicoluo/dev/elicitation-harness/logs/2026-08-20T23-17-17-00-00_elicit_5VnXYiHcYMXkgH8Pw4d6Rd.eval",
+        "limit": 500
+      },
+      {
+        "seed": 3,
+        "accuracy": 0.358,
+        "log": "/Users/nicoluo/dev/elicitation-harness/logs/2026-08-20T23-26-13-00-00_elicit_TdwiY53kxyLEv4kBb5oQkt.eval",
+        "limit": 500
+      },
+      {
+        "seed": 4,
+        "accuracy": 0.36,
+        "log": "/Users/nicoluo/dev/elicitation-harness/logs/2026-08-20T23-36-20-00-00_elicit_4s2q5snr3hWnLARCVtnoZX.eval",
+        "limit": 500
+      },
+      {
+        "seed": 5,
+        "accuracy": 0.336,
+        "log": "/Users/nicoluo/dev/elicitation-harness/logs/2026-08-20T23-54-13-00-00_elicit_8KtPQF272nqJgQH4WdeEM9.eval",
+        "limit": 500
+      }
+    ],
+    "planning+multi_critic": [
+      {
+        "seed": 1,
+        "accuracy": 0.348,
+        "log": "/Users/nicoluo/dev/elicitation-harness/logs/2026-08-21T00-05-48-00-00_elicit_A4HqUNKtxAhGnRhm5hqhfp.eval",
+        "limit": 250
+      },
+      {
+        "seed": 2,
+        "accuracy": 0.312,
+        "log": "/Users/nicoluo/dev/elicitation-harness/logs/2026-08-21T00-16-11-00-00_elicit_fyCBViAiuqNgcpG7AuU6Tw.eval",
+        "limit": 250
+      },
+      {
+        "seed": 3,
+        "accuracy": 0.332,
+        "log": "/Users/nicoluo/dev/elicitation-harness/logs/2026-08-21T00-24-51-00-00_elicit_DN5PG7J5y8xDF34mLnhDhk.eval",
+        "limit": 250
+      },
+      {
+        "seed": 4,
+        "accuracy": 0.34,
+        "log": "/Users/nicoluo/dev/elicitation-harness/logs/2026-08-21T00-32-53-00-00_elicit_Xp62Y9dNeuAKxWjPADLFcd.eval",
+        "limit": 250
+      },
+      {
+        "seed": 5,
+        "accuracy": 0.328,
+        "log": "/Users/nicoluo/dev/elicitation-harness/logs/2026-08-21T00-41-18-00-00_elicit_RbosfkkmBAXyF5jFSMjTsH.eval",
+        "limit": 250
+      }
+    ]
+  }
+}

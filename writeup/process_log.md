@@ -1500,3 +1500,589 @@ Not yet done: same computation on a second suite (MATH/intermediate_algebra
 never got its own Shapley sweep, only the earlier 4-config ablation) to
 check whether the attribution pattern is suite-specific too, on top of
 already being model-specific.
+
+## Phase 10 (cont.) — sample-level paired significance test: two of three "significant" findings don't survive
+
+Built `shapley_significance_test.py`, the tightening flagged as the
+natural next step in the prior entry. `shapley_attribution.py`'s
+bootstrap CI resampled only the 5 per-seed COALITION MEAN accuracies per
+coalition -- 5 numbers, full stop. But every Shapley main effect and
+pairwise interaction is just a fixed weighted linear combination of
+coalition means, and each coalition mean is itself an average over 198
+real per-sample outcomes on the IDENTICAL question set every other config
+saw (`shuffle=False`, same discipline `mcnemar_test.py` already relies
+on). So the identical linear combination can be computed PER (sample,
+seed) pair instead of per coalition -- one real observation per (k, s)
+instead of one per coalition, ~990 instead of 5. Averaging the ~990
+values reproduces the exact same point estimate as the coalition-mean
+version (hard-asserted in code, not eyeballed -- confirmed exactly equal
+for all 4 main effects and all 6 interactions, both models). Ran both a
+paired t-test and a Wilcoxon signed-rank test (non-parametric, since the
+per-sample statistic is a discrete-ish weighted sum of 0/1 differences,
+not obviously normal) against a null of 0.
+
+**Result: only 1 of the 3 previously-"significant" findings survives.**
+
+| effect | seed-bootstrap CI (prior entry) | sample-level test (n=990) |
+|---|---|---|
+| Qwen `multi_critic` (-0.77pts) | excluded 0 | t p=0.104, Wilcoxon p=0.279 -- **not significant** |
+| gemma `planning` (-1.32pts) | excluded 0 | t p=0.152, Wilcoxon p=0.534 -- **not significant** |
+| gemma `multi_critic` (+1.20pts) | excluded 0 | t p=0.021, Wilcoxon p=0.017 -- **still significant** |
+| all 6 pairwise interactions (both models) | all included 0 | all still not significant |
+
+**Why the flip, and which one to trust:** the seed-level bootstrap
+resamples-with-replacement from only 5 real numbers per coalition --
+small enough that the resulting CI is mechanically bounded by whatever
+those 5 numbers happened to be (can't produce a value outside their
+observed range), which understates true uncertainty when 5 points happen
+to look tightly clustered by chance. The sample-level test uses the real
+per-question paired structure instead, the same principle
+`mcnemar_test.py` was built around from the start of this project, and is
+the more trustworthy number of the two -- consistent with why pooled
+McNemar (sample-level) was adopted over single-run comparisons back in
+Phase 4. Gemma's `planning` result is the clearest case: t-test p=0.152
+and Wilcoxon p=0.534 disagree by a lot, meaning the per-sample distribution
+is skewed enough that the parametric test's normality assumption is
+shaky -- when the more conservative nonparametric test also says "not
+significant," that's not a borderline call.
+
+**Standing takeaway, revised from the prior entry: exactly one main
+effect survives rigorous testing on this data -- gemma's `multi_critic`
+benefit (+1.20pts, p<0.05 on both tests).** Every other main effect and
+every pairwise interaction, on both models, is statistically
+indistinguishable from noise at n=198x5 seeds. This is a much narrower
+claim than "two models show opposite significant effects on two
+different components" -- worth stating precisely this way in any eventual
+writeup rather than the looser version from the previous entry.
+
+**Caveat, restated (same one `mcnemar_test.py`'s pooled mode has always
+carried):** the 5 seeds share the same fixed 198-question set, so the 990
+"observations" aren't fully independent draws -- treat these p-values as
+an approximation, not textbook-exact, same as every other pooled test in
+this project.
+
+---
+
+## Phase 11 setup — before a full MATH sweep: pilot + power calc, and a runaway `tool_use` process caught mid-flight
+
+Given GPQA's sweep died under multiple-comparison correction, decided
+against just re-running the same 16-combo x 5-seed design on MATH and
+hoping for better luck. Root cause of the GPQA failure wasn't bad luck --
+`n=198`/5 seeds was validated once, against one big effect (bare vs cot,
++7pts, see "Scope decision" entry's seed justification), then reused to
+test ~20 much smaller Shapley effects it was never checked against.
+Built two scripts to fix the process, not just swap suites:
+
+- `math_pilot.py`: bare + each of the 4 single components (5 configs,
+  not the full 16), n=40, 3 seeds, both locked-in models. Saves per-seed
+  log paths, not just accuracy -- needed for real sample-level variance,
+  same reasoning as `shapley_significance_test.py`.
+- `power_analysis.py`: pulls real per-sample paired outcomes (via
+  `mcnemar_test.py`'s `sample_outcomes()`) for each component vs bare,
+  computes required N for 80% power at a Bonferroni-corrected alpha
+  (default corrects for 20 tests, matching GPQA's design). Explicitly
+  documented as a lower bound in its own docstring: it sizes the
+  isolated component-vs-bare delta, which GPQA's own data showed is
+  usually the LARGEST version of an effect (context-dependent, e.g.
+  gemma's multi_critic delta ranged -0.51pts to +3.13pts depending on
+  what else was on) -- the real Shapley main effect averages over more
+  contexts and is often smaller, and pairwise interactions need more N
+  still.
+
+**Bare accuracy on the fixed-prompt MATH_SYSTEM, confirmed clean at
+n=40:** Qwen2.5-7B landed at 0.200-0.250 across 3 seeds -- consistent
+with the earlier gpt-4o-mini validation (~0.25) that confirmed the
+prompt-leak fix, and confirms real headroom exists on this suite/model
+pairing (not near-ceiling or near-floor).
+
+**Runaway `tool_use` process found mid-pilot, unrelated to the power
+question but a real operational bug.** User flagged high CPU usage while
+the pilot's `tool_use` step was running. Investigated via `docker stats`/
+`docker top` rather than guessing: found NOT idle leftover containers
+(20 of those existed too, from the finished GPQA sweep, but sat at
+~0.02% CPU -- harmless) but one specific container with a `python3`
+process pinned at ~100% CPU continuously for **9 hours 11 minutes**,
+tied to the pilot's currently-active `tool_use` sample. Root cause: the
+model invoked the sandboxed `python()` tool with code that hit an
+infinite loop, and `elicit_task.py`'s `use_tools(python())` call never
+set a `timeout` -- confirmed via `inspect(python)` that the tool
+signature has always accepted `timeout: int | None = None`, defaulting
+to unbounded. This is the exact same class of gap HumanEval's own
+`code_execution_match` scorer already guards against with its own 30s
+timeout (see Phase 5's "tool use + HumanEval" entry) -- that guard was
+written for one code-execution path and never extended to the other.
+
+**Fix, in two parts:**
+1. Operational: killed just the runaway process inside the container
+   (`docker exec <id> kill -9 <pid>`, not the whole container, since it
+   was still needed by the in-progress eval) -- confirmed CPU dropped to
+   0% immediately after. The eval recovered on its own: that one sample
+   scored as an error/incorrect, checkpointing meant nothing else was
+   lost, and the pilot continued into the next seed normally. Also
+   cleaned up the 20 idle leftover sandbox containers from the finished
+   GPQA sweep (harmless but no longer needed) plus 6 unrelated old
+   exited containers from other projects, after confirming with the user
+   given the bulk/destructive nature of the cleanup.
+2. Code: added `timeout=30` to `python()` in `build_solver()`
+   (`elicit_task.py`), mirroring HumanEval's existing convention exactly.
+   Matters more for the eventual full MATH sweep than it did for GPQA --
+   GPQA's own `tool_use` pilot found the model invokes the tool rarely
+   (1 real call across 10 samples, see "tool_use on GPQA crashed the
+   whole task" entry), but MATH problems plausibly invite more
+   computational tool use (verifying algebra, iterative solving), so the
+   exposure to this bug is likely higher there, not lower -- good that it
+   surfaced now, in a 40-sample pilot, rather than partway through a
+   500-sample sweep run.
+
+**Standing note:** this was caught because the user happened to notice
+CPU usage, not because anything in the harness would have surfaced it on
+its own. `run_shapley_sweep.py`/`math_pilot.py` have no wall-clock guard
+at the eval level either -- a stuck sample without the new `timeout=30`
+fix would have silently held up one of 5 concurrency slots indefinitely
+with no error, no log line, nothing to notice except elevated CPU if
+someone happened to look. Worth keeping in mind for any future
+unattended multi-day run: fixed now for `tool_use` specifically, but the
+general pattern (one bad sample silently absorbing a concurrency slot
+forever) isn't structurally guarded against everywhere.
+
+**Pilot finished cleanly on its own** (not killed) -- all 30 runs (5
+configs x 3 seeds x 2 models) completed. One real problem found on
+inspection: gemma's isolated `planning` config failed 3/3 (100%) seeds,
+all on the same `BadRequestError 400 Input validation error` seen once
+before on GPQA, but here hitting 3 *different* MATH questions at
+different points in each 40-sample batch -- a much higher rate than
+GPQA's 1-in-80. Likely cause: MATH's heavier LaTeX-dense content
+combined with `planning()`'s two-consecutive-user-message structure
+(question, then plan-request, no assistant turn between) -- that exact
+structure worked fine on GPQA's simpler content. Qwen's `planning`
+config on the same MATH questions succeeded 3/3, so this looks
+gemma+MATH-content-specific. Not resolved -- moot for now given the
+provider switch below.
+
+---
+
+## Switch to DeepInfra: neither original model exists there, real pricing comparison, and a Qwen3-32B reasoning-mode bug caught before it corrupted anything
+
+User requested switching providers for cost (Together was too
+expensive), with `DEEPINFRA_API_KEY` already added to `.env`.
+
+**Checked before assuming anything would be a drop-in swap.** Neither
+`Qwen2.5-7B-Instruct-Turbo` nor `google/gemma-3n-E4B-it` -- the exact
+pair this entire study (GPQA sweep, Shapley/interaction analysis, MATH
+pilot) was built around -- exists in DeepInfra's model catalog
+(confirmed via their live `/v1/openai/models` endpoint, not assumed).
+This is not a config change, it's a full model-selection redo, same
+category of event as Phase 12's "Llama-3.1-8B inaccessible" pivot.
+
+**Real pricing pulled live** (DeepInfra's OpenAI-compatible `/models`
+endpoint doesn't expose pricing, so used their pricing page directly)
+comparing candidates against current Together rates:
+
+| model | Together (current) | DeepInfra candidates |
+|---|---|---|
+| Qwen (7B) | Qwen2.5-7B-Instruct-Turbo $0.30/$0.30 | no 7B Qwen2.5 exists at all. Qwen3-14B $0.12/$0.24 (bigger, cheaper), Qwen3-32B $0.08/$0.28 (much bigger, still cheap), Qwen2.5-72B-Instruct $0.36/$0.40 (bigger AND pricier -- not a win) |
+| gemma (E4B) | gemma-3n-E4B-it $0.06/$0.12 | gemma-4-E4B-it $0.02/$0.10 (closest size match, genuinely cheaper), gemma-3-4b-it $0.05/$0.10 |
+
+DeepInfra is genuinely cheaper, but only by accepting bigger models --
+there's no small Qwen2.5 available there at any price. This directly
+intersects the standing "maybe small models can't use these components"
+question from the GPQA null-result discussion. **User chose to lean into
+that: `Qwen/Qwen3-32B` + `google/gemma-3-27b-it`**, deliberately larger
+than the original pair, still cheap on DeepInfra.
+
+**Provider mechanics, confirmed via source not docs:** `inspect_ai`'s
+`openai_compatible.py` has no dedicated `deepinfra.py` provider -- it's
+used via the generic `openai-api/<service>/<model>` path, which
+auto-derives `{SERVICE}_API_KEY` (so `DEEPINFRA_API_KEY` already matched
+what the user set) but requires `{SERVICE}_BASE_URL` explicitly, no
+hardcoded default the way Together's dedicated subclass has one. Added
+`DEEPINFRA_BASE_URL=https://api.deepinfra.com/v1/openai` to `.env`
+(confirmed live via DeepInfra's own docs, not memory).
+
+**Bug 1: Qwen3-32B's default `max_tokens` (65536) exceeds its own
+40960-token context window**, 400s on every call until capped
+explicitly. Fixed: `MAX_TOKENS = 4096` in `run_shapley_sweep.py`,
+applied uniformly to every model (not just the one that needed it --
+never let generation config differ between compared configs).
+
+**Bug 2, much more serious: Qwen3-32B has an internal "thinking" mode
+that fires on hard questions regardless of the system prompt's "do not
+explain your reasoning" instruction.** Initial 20-sample GPQA pilot
+looked survivable on the surface (accuracy 0.450, `no_answer=0/20`) but
+the aggregate hid two things: `avg_out_tok=1781` in the BARE condition
+(gemma's same condition: 4 tokens) was the actual tell, and a hand-built
+"no answer" check was silently wrong (checked
+`score.answer in (None, '')`, but `letter_match`/`boxed_match` actually
+write a sentinel string like `"(no ANSWER: line found)"` on failure, not
+`None` -- so the check reported 0 failures when there were real ones).
+Read 8 raw transcripts directly rather than trusting the aggregate:
+- 2 of 8 samples burned the full 4096-token budget on hidden reasoning
+  with a completely EMPTY visible completion -- real no-answer failures
+  the buggy check missed entirely.
+- 1 sample had reasoning leak directly into the visible text AND broke
+  the required `ANSWER: X` format (`**Answer:** A` instead), so it would
+  fail scoring even though a human could read the right answer off it.
+- Reasoning blocks up to 16,319 chars on samples that DID produce a
+  clean final answer -- real hidden cost/latency even when not visibly
+  broken.
+This is the same class of problem that got Qwen3.5-9B rejected earlier
+in the project ("turned out to be unusable at a reasonable token
+budget"), just less visible this time since it didn't show up as an
+obviously-wrong headline accuracy number -- caught only because the
+avg-output-token anomaly prompted a transcript read, the same discipline
+that caught the original CoT-leak bug in Phase 3.
+
+**Fix, confirmed via live smoke test (not docs -- DeepInfra's own API
+docs page for this model don't mention it):**
+`extra_body={"chat_template_kwargs": {"enable_thinking": False}}`, the
+standard vLLM/Qwen3 convention. On the same hard GPQA question: output
+tokens 1977 -> 5, same correct answer. Confirmed harmless on
+gemma-3-27b-it (extra fields ignored, verified with a direct call) so
+applied to both models uniformly via `EXTRA_BODY` in
+`run_shapley_sweep.py`, threaded into both scripts' `inspect_eval()`
+calls alongside `MAX_TOKENS`.
+
+**Re-ran the same 20-sample pilot with both fixes in place, both suites,
+both models, with the no-answer check itself also fixed:**
+
+| suite | model | accuracy | avg output tok | no-answer |
+|---|---|---|---|---|
+| GPQA | Qwen3-32B | 0.550 | 5 | 0/20 |
+| GPQA | gemma-3-27b-it | 0.350 | 4 | 0/20 |
+| MATH | Qwen3-32B | 0.500 | 548 | 2/20 |
+| MATH | gemma-3-27b-it | 0.350 | 8 | 0/20 |
+
+GPQA fully clean now (accuracy even improved, 0.450->0.550, consistent
+with removing the format-violation failures). MATH still shows elevated
+output (548 tok, vs gemma's 8) and a 10% no-answer rate for Qwen3-32B --
+read both failures directly: one was a plain-text "neither" instead of
+`\boxed{...}` (an ordinary instruction-following miss, not a bug), the
+other was a genuine repetition loop (`"Let's now consider the sum of the
+roots..."` repeated verbatim until hitting the token cap) -- a known
+general LLM failure mode, not thinking-mode-specific. Judged acceptable
+to proceed with, not a blocker, given it's an order of magnitude better
+than the pre-fix failure profile and both remaining causes are mundane.
+
+All four (suite, model) combinations show real headroom -- none near
+their floor or ceiling.
+
+**Status: setup complete, code updated
+(`run_shapley_sweep.py`/`math_pilot.py` now target
+`openai-api/deepinfra/Qwen/Qwen3-32B` and
+`openai-api/deepinfra/google/gemma-3-27b-it`, with `MAX_TOKENS=4096` and
+`EXTRA_BODY` fixes baked in). The Together-era MATH pilot data
+(`results/math_pilot_together-*.json`) and the full GPQA sweep/Shapley
+analysis remain valid as a separate prior chapter on the old model pair
+-- not comparable to anything run on the new models, but not
+invalidated either.
+
+## Re-ran the MATH pilot on the new DeepInfra models: a third bug (`multi_critic`'s config never reached the critic model), fixed properly this time
+
+Reran `math_pilot.py` on `Qwen3-32B` / `gemma-3-27b-it`. Both models'
+`bare`/`critique`/`tool_use`/`planning` configs completed cleanly, in a
+healthy 0.275-0.625 accuracy range, no errors -- including gemma's
+`tool_use`, which took 2h12m on one seed (a real outlier vs. the usual
+1-3 minutes) but completed successfully; checked `docker stats`
+immediately after and found no runaway process this time, unlike the
+earlier 9-hour incident -- the `timeout=30` fix from that entry is
+holding.
+
+**gemma's `multi_critic` config failed all 3/3 seeds**, same
+`BadRequestError 400 -- max_tokens=65536 cannot be greater than
+max_model_len=40960` already fixed once for Qwen3-32B as a PRIMARY
+model. Root cause: `multi_critic(critic_model)` passes a bare model-name
+string into `self_critique(model=critic_model)`, which resolves it via
+its own internal `get_model(model)` call with NO config -- meaning the
+critic model (Qwen3-32B, when it's playing critic for gemma) never
+inherited the `max_tokens`/`extra_body` fix applied to the primary
+model. The fix only ever touched the eval-level `inspect_eval()` call,
+which has no visibility into a critic model instantiated separately
+inside a solver.
+
+**Fix, first attempt broke immediately in an instructive way.** First
+instinct: change `multi_critic()` to build a configured `Model` eagerly
+(`get_model(critic_model, config=critic_config)`) and pass that into
+`self_critique(model=...)` instead of a bare string. This failed on the
+very first call: `PrerequisiteError: No DEEPINFRA_API_KEY defined` --
+because `elicit(...)` is evaluated as a plain function argument to
+`inspect_eval(elicit(...), ...)`, so it runs to completion (including
+any eager `get_model()` call inside it) BEFORE `inspect_eval()` itself
+gets a chance to load `.env`. `self_critique()`'s own model resolution
+already happens lazily, inside its `solve()` closure, at actual
+generation time -- specifically to avoid this exact problem. The eager
+fix broke the thing it was trying to fix.
+
+**Real fix: made `multi_critic()` itself `@solver`-decorated and lazy,**
+matching `self_critique()`'s own pattern -- `get_model(critic_model,
+config=critic_config)` now happens inside `multi_critic()`'s own
+`solve(state, generate)` closure, called only at actual generation time
+(after `.env` is loaded), then delegates to `self_critique(model=critic)
+(state, generate)` directly. Threaded `critic_config: GenerateConfig |
+None` through `multi_critic()` -> `build_solver()` -> `elicit()`;
+`run_shapley_sweep.py`/`math_pilot.py` now build
+`GenerateConfig(max_tokens=MAX_TOKENS, extra_body=EXTRA_BODY)` and pass
+it as `critic_config` whenever `multi_critic=True`, mirroring the
+primary model's own config exactly.
+
+Verified with a direct smoke test before touching the pilot data:
+gemma-with-Qwen3-32B-critic on 5 MATH samples, `status=success`, critic
+model usage 743 tokens (40 output) -- no overflow, and `enable_thinking:
+false` confirmed carrying through to the critic too (40 output tokens
+for a critique response, not the thousands a "thinking" pass would
+burn).
+
+**Patched the 3 failed seeds directly** (checkpoint-resume wouldn't have
+retried them on its own -- a `nan`-valued `(config, seed)` entry still
+counts as "already done" to that logic, same gap noted in the earlier
+GPQA nan-patching entry). All 3 succeeded cleanly on rerun (0.400,
+0.375, 0.400) -- both models' pilots are now genuinely complete, 5
+configs x 3 seeds each, zero remaining gaps:
+
+| config | Qwen3-32B | gemma-3-27b-it |
+|---|---|---|
+| bare | 0.575, 0.550, 0.475 | 0.350, 0.375, 0.375 |
+| critique | 0.475, 0.325, 0.400 | 0.525, 0.550, 0.525 |
+| tool_use | 0.400, 0.475, 0.325 | 0.325, 0.275, 0.275 |
+| planning | 0.575, 0.550, 0.625 | 0.375, 0.400, 0.400 |
+| multi_critic | 0.475, 0.550, 0.500 | 0.400, 0.375, 0.400 |
+
+Next: run `power_analysis.py` on both files to get real required-N
+numbers for the components that have never been measured on MATH before
+(`tool_use`, `planning`, `multi_critic`) -- the actual purpose of this
+pilot, now unblocked.
+
+## Power analysis results, and launching the real MATH Shapley sweep
+
+`power_analysis.py` on both pilot files, Bonferroni-corrected for 20
+planned tests (matching GPQA's design): **7 of 8 tested main effects are
+comfortably powered at the planned n=500 x 5-seed budget** (critique:
+N=154/93 needed vs 2500 available; tool_use: N=281/945; planning:
+N=1491/1793, right at the edge but clears it; gemma's multi_critic:
+N=587). The one gap: **Qwen's multi_critic effect (-2.5pts) needs
+N=7416, about 3x the planned budget** -- a real, small effect that this
+sweep won't have power to confirm, flagged going in rather than
+discovered as a surprise later. Sharp contrast with GPQA, where nothing
+survived correction at all -- direct evidence the earlier model upsize
+(7B/E4B -> 32B/27B) fixed the actual problem, not just changed the
+suite.
+
+Updated `run_shapley_sweep.py`: `SUITE = "math"`, `LIMIT = 500` (was
+still pointed at the old `gpqa`/`198` config from before the DeepInfra
+detour). Launched the real 16-combo x 5-seed x 2-model sweep.
+
+## Why the sweep would have taken ~12 days, and getting it to ~3
+
+First estimate, from real pilot timing data (30 runs at n=40 totaled 4.49
+hours) scaled by the sample-work ratio to the full sweep (160 runs x
+n=500 vs 30 runs x n=40 = 66.7x): **~300 hours, ~12.5 days**, sequential.
+Killed the sweep immediately (it hadn't even finished its first
+n=500 run yet -- essentially zero sunk cost) rather than let a
+12-day estimate ride.
+
+**Lever 1: `MAX_CONNECTIONS` was still 5, calibrated against an OpenAI
+rate-limit incident that has nothing to do with DeepInfra.** Never
+re-tested. Ran a live 3-way comparison (n=40, same model/config/seed,
+varying only `max_connections`): 5 -> 142.8s, 20 -> 94.0s (~1.5x
+faster), 40 -> 103.1s (no further gain -- likely DeepInfra's own
+throughput ceiling, not the client-side setting). Set
+`MAX_CONNECTIONS = 20`.
+
+**Lever 2: running both models in parallel.** First attempt used
+`asyncio.gather()` over two `eval_async()` calls in one process --
+failed immediately with `RuntimeError("Multiple concurrent calls to
+eval_async are not allowed.")`, an explicit Inspect restriction, not a
+provider issue. Fixed by using two separate OS processes instead (added
+an optional `sys.argv[1]` model-index selector to
+`run_shapley_sweep.py` so `python run_shapley_sweep.py 0` and `... 1`
+can run independently). Verified live: launched both as background
+processes simultaneously, no rate-limit conflicts, no errors -- DeepInfra
+evidently doesn't share a single account-wide connection budget across
+concurrent processes the way the theoretical risk suggested it might.
+
+**Corrected the estimate with real per-model numbers** (the original
+12.5-day figure conflated both models together and was badly skewed by
+one 2h12m outlier run that alone accounted for ~45% of the pilot's total
+time). Split by model or the outlier ONLY replaced with a generous
+10-minute placeholder (the real risk noted, not eliminated -- at 160
+runs instead of 30, more outliers are plausible): Qwen3-32B's full
+sweep at `max_connections=20` ~1.6 days, gemma-3-27b-it's ~2.9 days.
+Sequential total ~4.5 days (already a big improvement over 12.5 just
+from the concurrency fix); run as two parallel processes, total is
+bounded by the slower model alone: **~2.9 days**.
+
+**Launched both processes**: `python run_shapley_sweep.py 0` (Qwen3-32B)
+and `python run_shapley_sweep.py 1` (gemma-3-27b-it), each writing its
+own `results/shapley_sweep_math_{model_slug}.json`, no shared state, no
+collision risk. Deliberately did NOT cut seeds or `n` to hit a faster
+number -- that would have undone the power analysis just completed
+above; both real levers used here (concurrency, process-level
+parallelism) cost nothing in statistical validity, unlike a scope cut
+would have.
+
+## Cutting the sweep further: ~2.9 days was still deemed too long, targeted budget cut on `multi_critic` configs
+
+User still wanted the ~2.9-day estimate down, without giving up real
+sample size. Laid out the actual constraint before proposing a cut:
+total runtime scales with `n x seeds` (total request count), and that
+product can't drop much below ~2000 without pushing `planning` (needed
+N=1491/1793, the tightest currently-powered effect) below its required
+threshold -- so a uniform cut has limited room (~20% max) before it
+starts costing something already validated as real.
+
+**Real asymmetry found instead: the 8 of 16 configs with
+`multi_critic=True` are both the slowest in the sweep (they call a
+SECOND model) and the one place the power analysis already showed the
+2500-observation budget was badly mismatched to need** -- Qwen's
+multi_critic main effect requires N=7416 (unreachable at ANY sane
+budget, cut or not) while gemma's needs only N=587. Neither number
+benefits from the full 2500 the uniform design was giving them: Qwen's
+was always going to fail regardless, gemma's was already 4x
+over-provisioned.
+
+**Cut:** `MULTI_CRITIC_LIMIT = 250` (half of `LIMIT=500`), applied only
+to configs with `multi_critic=True`, uniformly across both models (not
+just Qwen, which is the one that actually needed it -- keeps every
+compared config on equal footing, same principle as every other
+generation-config decision in this project). n=250 x 5 seeds = 1250
+still clears gemma's N=587 requirement with 2x margin, costs nothing on
+Qwen's already-unreachable number, and stays a real, non-trivial sample
+size for the interaction terms that touch `multi_critic` (not sized
+directly by `power_analysis.py`, which only covers main effects, but
+1250 observations is still meaningful, not negligible).
+
+**Implementation:** `run_shapley_sweep.py` now computes `run_limit`
+per-config (500 or 250) rather than a single global `LIMIT`, threads it
+into `inspect_eval(limit=run_limit, ...)`, and records it per-entry in
+the summary JSON (`{"seed":..., "accuracy":..., "log":..., "limit":...}`)
+since it's no longer implied by one global value. Resume-loading falls
+back to `LIMIT` for any pre-existing entries saved before this field
+existed (correct, not a guess -- those entries genuinely were run at the
+old uniform 500). One real such entry existed already: gemma's
+`multi_critic` seed=1 had already completed at n=500 before this cut
+was made (minimal sunk cost otherwise -- caught and killed before either
+process had gotten further); left as-is rather than discarded, since a
+higher-n data point is strictly fine to keep, not wrong.
+
+Total sample-observations per model: 30,000 vs. 40,000 at the original
+uniform budget (75%) -- but because the cut targets specifically the
+slowest configs, the real time savings should be larger than the
+sample-count ratio suggests. Revised estimate: **Qwen ~0.9-1.2 days,
+gemma ~1.6-2.2 days, parallel total ~1.6-2.2 days** (down from ~2.9).
+Relaunched both processes with the new config.
+
+---
+
+## Looking for a faster/cleaner model, and adding a third leg (Qwen2.5-72B-Instruct)
+
+User noticed gemma was visibly outpacing Qwen3-32B and asked whether
+Qwen's slow pace was fixable, then whether it was worth adding a third
+model for a genuine multi-model comparison. This became a real, thorough
+model search -- logging the full trail since several dead ends and one
+self-correction are worth keeping for anyone revisiting model choice
+later.
+
+**Attempt 1: force Qwen3-32B to be terser via prompting.** Tested a
+few-shot exemplar and a strong imperative ("your ENTIRE response must be
+exactly \boxed{answer}") against the baseline MATH_SYSTEM prompt, n=15.
+Both cut output tokens dramatically (633 -> 40 or 13) but also dropped
+accuracy by ~20 points (0.467 -> 0.267), consistently across both
+variants. Conclusion: Qwen's baseline verbosity is functioning as
+informal reasoning that genuinely helps it solve harder problems, even
+with explicit CoT and hidden thinking both already disabled -- forcing
+terseness doesn't just save tokens, it handicaps the model's real
+"bare" capability, which would corrupt the exact bare-condition
+comparison this whole study depends on. Rejected; did not apply.
+
+**Attempt 2: search DeepInfra's catalog for a replacement model.**
+Queried the live `/v1/openai/models` endpoint's tag metadata for a full
+picture first: 185 total models on the endpoint (includes embeddings,
+image/video-gen, TTS/STT), 101 tagged `chat`, 51 text-only, and
+**64 of 185 -- a majority of chat models -- tagged `reasoning`**. This
+last number matters: it's not that Qwen3-32B was unlucky, hybrid
+thinking-mode architecture is now the norm among available chat models,
+not the exception, so any replacement search needs to specifically
+filter for non-reasoning models rather than assume most models are
+"normal."
+
+Tested 8 candidates total, all via the same protocol (live headroom +
+verbosity check on MATH, n=20, transcript read before trusting the
+aggregate):
+
+| model | size | verdict |
+|---|---|---|
+| Mistral-Small-3.2-24B-Instruct | 24B | accuracy 0.100 -- too weak (floor) |
+| gemma-4-31B-it | 31B | accuracy 0.950 -- too easy (ceiling), AND verbose (657 tok) despite being gemma family |
+| Nemotron-3-Nano-30B-A3B | 30B | worse verbosity than Qwen3-32B (1810 tok), 20% no-answer rate |
+| microsoft/phi-4 | 14B | clean, fast, good headroom -- but **no tool-calling support at all** (hard 405 error), blocks 8/16 configs. Not a fixable bug. |
+| google/gemma-3-12b-it | 12B | accuracy 0.200 -- too weak |
+| mistralai/Mistral-Nemo-Instruct-2407 | 12B | accuracy 0.100 -- too weak |
+| meta-llama/Meta-Llama-3.1-8B-Instruct-Turbo | 8B | accuracy 0.050 -- too weak |
+| meta-llama/Llama-3.3-70B-Instruct-Turbo | 70B | clean, tool-calling OK, good headroom -- but see below |
+
+**Real finding, not just noise: 4 of 4 models tested in the 8-24B range
+landed at 5-20% accuracy on MATH intermediate_algebra** -- consistent
+enough across genuinely different model families (Mistral, gemma, Llama)
+to conclude there's a real capability threshold for this specific suite
+somewhere between ~24B and ~27B, not a matter of picking the right small
+model. Every model that's cleared real headroom all session has been
+27B+. This is itself a fact worth keeping for future suite/model
+selection, independent of what it meant for the immediate search.
+
+**Llama-3.3-70B-Instruct-Turbo: passed every check except speed, and
+that took a self-correction to get right.** First comparison (different
+n, different earlier test run) suggested it ran about as fast as
+Qwen3-32B (56.7s vs 59.4s) -- user asked to verify this properly rather
+than take it on faith, good call: a controlled, matched re-test (same
+n=20, same max_connections=15, back-to-back) showed Qwen3-32B at 44.9s
+vs Llama-3.3-70B at **102.5s -- genuinely ~2.3x slower**, not
+comparable. The original comparison was an apples-to-oranges mistake
+(different n, different run, real run-to-run variance from
+temperature=0.7 sampling even at a fixed seed on this provider).
+Corrected on the spot rather than left standing. Since sweep time is
+bounded by the slowest leg and Qwen3-32B is already that bottleneck,
+adding a model that's slower still would extend the overall sweep, not
+just add a data point -- rejected for this reason specifically, not a
+capability problem.
+
+Also worth recording since it corrected a real overgeneralization made
+mid-search: comparing Qwen2.5-72B (72B, 8 avg output tokens, 5.0s) to
+Llama-3.3-70B (70B, 125 tokens, 56.7s in the original imprecise test)
+had suggested "bigger models are slower per-token, canceling out
+verbosity gains" -- **wrong**. Computing implied per-token rates from
+the properly controlled numbers (Qwen2.5-72B: 12.2s/140 tokens =~
+0.087s/token; Llama-3.3-70B: 102.5s/3800 tokens =~ 0.027s/token) shows
+Llama's raw per-token rate isn't slower at all -- the wall-clock gap is
+almost entirely explained by **output token count**, not parameter
+count. Verbosity, measured directly, predicts speed far better than
+model size does. Worth remembering next time a model's speed needs
+estimating from its size alone.
+
+**Qwen/Qwen2.5-72B-Instruct: passed every check.** Tool-calling confirmed
+working (no 405), controlled n=20 timing at 12.2s (faster than BOTH
+models already running -- won't become the bottleneck), transcripts
+read directly (clean `\boxed{...}` only, no hidden reasoning, matching
+the same non-reasoning generation as the project's very first validated
+model, Qwen2.5-7B), headroom confirmed twice (0.300, 0.350, both n=20).
+72B is a genuine third scale tier against the 27B/32B pair already
+running -- 14B (phi-4) wasn't reachable due to tool-calling, so this
+ended up as a small/medium -> large comparison rather than the
+originally-hoped 3-tier small/medium/large, but still meaningfully
+different from the current pair.
+
+**Added as `MODEL_PAIR`'s third entry**, critic model gemma-3-27b-it
+(same reasoning as every other critic-assignment decision this session:
+fast, cheap, already validated, doesn't require touching the two sweeps
+already in progress). Ran its pilot via `math_pilot.py` (correctly
+skipped the two already-complete models, only ran the 15 new
+Qwen2.5-72B runs, zero risk to the other two). Power analysis: 2 of 4
+main effects well-powered at the planned budget (critique +7.5pts,
+N=275 needed; multi_critic +15.8pts, N=100 needed -- both comfortably
+covered by 2500 available), 2 underpowered (tool_use -3.3pts needs
+N=3826; planning -0.8pts, essentially negligible, needs N=12,638) --
+same acceptable pattern as the other two models, not a blocker.
+
+**Launched as a third parallel process** (`python run_shapley_sweep.py
+2`), alongside the two already running. All three now active
+simultaneously, independent summary files
+(`results/shapley_sweep_math_openai-api-deepinfra-qwen-qwen2.5-72b-instruct.json`),
+no shared state, no collision risk.
