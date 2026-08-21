@@ -2086,3 +2086,61 @@ same acceptable pattern as the other two models, not a blocker.
 simultaneously, independent summary files
 (`results/shapley_sweep_math_openai-api-deepinfra-qwen-qwen2.5-72b-instruct.json`),
 no shared state, no collision risk.
+
+## DeepInfra account ran out of balance mid-sweep: all three processes silently corrupted most of their remaining data, fixed at the resume-logic level
+
+**First symptom, caught via a routine "check the runs" pass, not a crash.**
+gemma's log showed 10 `Traceback` matches. Most were harmless (the
+MODEL's own generated tool code hitting a `NameError`, correctly
+reported back to it as a tool result -- normal `tool_use` behavior, not
+a bug). One was real: a `tool_use` seed hit
+`BadRequestError 400 -- max_tokens=4096 exceeds the model's 131,072
+context window with 127,156 input tokens already used`, likely from the
+model looping on the same broken code repeatedly without correcting
+itself, ballooning the conversation until it blew the context window.
+Patched the same way as every prior nan (rerun the one (config, seed)
+pair, overwrite in place) -- except the very next retry hit a
+**different, more serious error**: `APIStatusError 402 -- "You need
+positive balance to do inference. Please add balance manually or setup
+top-up"`.
+
+**Checked whether this was isolated or account-wide before doing
+anything else** -- grepped all three sweep logs, found `402` in all
+three, all at the exact same wall-clock minute as the current time.
+Confirmed live and ongoing, not a resolved-in-the-past blip: a smoke
+test call failed the same way. This needed the user's own action (top
+up DeepInfra balance) -- flagged clearly and stopped rather than attempt
+a workaround.
+
+**The real damage only became visible once the user added funds and the
+sweeps were checked again: all three processes had kept running through
+the ENTIRE outage and reached their final config**, each printing "Done."
+-- but every request during the outage window failed and got recorded
+as `accuracy: nan`, and the *original* resume logic (`if summary_path
+exists, treat every recorded (config, seed) as done`) has no concept of
+a failed-but-recorded entry -- a `nan` counts as "done" forever, exactly
+like the earlier one-off nan patches, just at 100x the scale this time.
+Counted the actual damage: **158 of 240 total seed-runs (66%) were nan**
+-- Qwen3-32B 49/80, gemma 58/80, Qwen2.5-72B 51/80.
+
+**Fix: made the resume logic itself nan-aware, instead of hand-patching
+158 entries one at a time.** `run_for_model()`'s prior-results loader
+now drops any `nan`-accuracy entry from both the `results` dict and the
+`done` set when loading a summary file, rather than keeping it. A plain
+relaunch of all three processes therefore naturally retries exactly the
+158 failed (config, seed) pairs and leaves the 82 genuinely-successful
+ones alone -- no risk of ending up with 6 seeds recorded for a config
+that should have 5, since the stale nan entry is fully removed before
+the loop re-appends a fresh one. This is a strictly better fix than
+another one-off patch script: it also covers any future interruption of
+the same shape (a whole-account outage, not just a single bad sample)
+without needing a bespoke script each time.
+
+**Relaunched all three processes with the fix in place.** Confirmed
+recovery directly rather than assuming: within the first hour,
+Qwen3-32B's nan count went from 49 to 0, gemma and Qwen2.5-72B were
+actively clearing their backlogs (58 and 51 respectively), and zero new
+`402` errors appeared in any log post-relaunch -- the balance top-up
+fully resolved the underlying cause, and the resume-logic fix is
+correctly directing all recovery effort at exactly the entries that
+need it.

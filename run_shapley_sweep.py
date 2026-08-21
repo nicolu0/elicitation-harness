@@ -207,20 +207,39 @@ def run_for_model(model: str, critic_model: str):
     if summary_path.exists():
         with open(summary_path) as f:
             prior = json.load(f)
+        nan_count = 0
         for label, runs in prior.get("results", {}).items():
             # r.get("limit", LIMIT): entries saved before this per-config
             # limit existed don't have the field -- they were genuinely all
             # run at the (then-uniform) LIMIT, so that's the correct
             # fallback, not a guess.
-            results[label] = [
-                (r["seed"], r["accuracy"], r["log"], r.get("limit", LIMIT))
-                for r in runs
-            ]
+            #
+            # NaN entries are dropped here, not carried over -- a NaN
+            # means that (config, seed) FAILED (e.g. the DeepInfra
+            # account-balance outage that hit all three sweeps at once),
+            # and the original "any recorded entry counts as done"
+            # resume logic would otherwise treat a failure as permanently
+            # finished, silently leaving corrupted data in place forever.
+            # Dropping it from both `results` and `done` means a normal
+            # relaunch naturally retries exactly the failed runs and
+            # appends a fresh entry -- no manual per-entry patching
+            # needed, and no risk of ending up with two entries for the
+            # same (config, seed) once the retry succeeds.
+            results[label] = []
             for r in runs:
+                if r["accuracy"] != r["accuracy"]:  # nan check
+                    nan_count += 1
+                    continue
+                results[label].append(
+                    (r["seed"], r["accuracy"], r["log"], r.get("limit", LIMIT))
+                )
                 done.add((label, r["seed"]))
         if done:
             print(f"Resuming {summary_path}: {len(done)} (config, seed) runs "
-                  f"already complete, skipping those.\n")
+                  f"already complete, skipping those.")
+        if nan_count:
+            print(f"Dropped {nan_count} NaN (failed) entries -- these will be "
+                  f"retried this run.\n")
 
     print(f"\n=== model={model}  critic_model={critic_model} "
           f"({len(CONFIGS)} configs x {len(SEEDS)} seeds) ===\n")

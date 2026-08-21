@@ -146,6 +146,43 @@
         "log": "/Users/nicoluo/dev/elicitation-harness/logs/2026-08-21T00-41-18-00-00_elicit_RbosfkkmBAXyF5jFSMjTsH.eval",
         "limit": 250
       }
-    ]
+    ],
+    "tool_use": [
+      {
+        "seed": 3,
+        "accuracy": 0.304,
+        "log": "/Users/nicoluo/dev/elicitation-harness/logs/2026-08-21T06-57-40-00-00_elicit_dfzJeh49LQHuNppHjqndJw.eval",
+        "limit": 500
+      },
+      {
+        "seed": 4,
+        "accuracy": 0.296,
+        "log": "/Users/nicoluo/dev/elicitation-harness/logs/2026-08-21T07-27-57-00-00_elicit_HnxhypkCtMRMuUwN8GsSnD.eval",
+        "limit": 500
+      },
+      {
+        "seed": 1,
+        "accuracy": NaN,
+        "log": "/Users/nicoluo/dev/elicitation-harness/logs/2026-08-21T14-51-33-00-00_elicit_6R6UGtrg6yNLYtxUHTVFSg.eval",
+        "limit": 500
+      },
+      {
+        "seed": 2,
+        "accuracy": 0.288,
+        "log": "/Users/nicoluo/dev/elicitation-harness/logs/2026-08-21T17-12-53-00-00_elicit_H75fvDtqS3sgAdUJpewvRU.eval",
+        "limit": 500
+      }
+    ],
+    "tool_use+multi_critic": [],
+    "tool_use+planning": [],
+    "tool_use+planning+multi_critic": [],
+    "critique": [],
+    "critique+multi_critic": [],
+    "critique+planning": [],
+    "critique+planning+multi_critic": [],
+    "critique+tool_use": [],
+    "critique+tool_use+multi_critic": [],
+    "critique+tool_use+planning": [],
+    "critique+tool_use+planning+multi_critic": []
   }
 }
