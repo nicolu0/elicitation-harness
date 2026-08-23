@@ -318,6 +318,27 @@ def run_for_model(model: str, critic_model: str):
                 # would (see process_log.md's "declined" entry on that).
                 fail_on_error=0.02,
                 score_on_error=True,
+                # Added 2026-08-23: found via direct sample-buffer-db
+                # inspection that a single runaway tool_use sample can
+                # starve the whole run, not just waste its own time.
+                # max_connections=20 only bounds model-API concurrency --
+                # sandbox setup/exec/teardown goes through a SEPARATE,
+                # shared max_subprocesses pool (defaults to
+                # os.cpu_count()=10 on this machine). A sample stuck
+                # looping python() calls keeps re-winning that shared
+                # pool, so new samples' `docker compose up` can't get a
+                # subprocess slot to even start -- confirmed live: one
+                # gemma seed sat at exactly 10 dispatched samples (8
+                # finished, 2 stuck) for 3+ hours with zero new samples
+                # picked up. working_limit bounds each sample's own
+                # active working time (excludes queue/retry wait, so it
+                # won't misfire on a sample that's legitimately just
+                # waiting its turn) -- 600s is generous relative to a
+                # normal sample (a full 250-sample seed completes in
+                # ~10min when healthy, i.e. ~2-3s/sample) while firmly
+                # capping the worst case that was otherwise running
+                # 10+ hours on a single sample.
+                working_limit=600,
             )[0]
             acc = get_accuracy(log)
             log_path = str(log.location) if hasattr(log, "location") else None
