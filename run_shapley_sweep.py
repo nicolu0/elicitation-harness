@@ -115,8 +115,16 @@ EXTRA_BODY = {"chat_template_kwargs": {"enable_thinking": False}}
 # model being evaluated and when it's serving as the CRITIC for another
 # model's multi_critic runs (gemma is critic for both other sweeps, so
 # this matters for its critic role too, not just its own sweep).
+#
+# gemma removed 2026-08-23: with both other sweeps finished, gemma had
+# zero remaining contention but was still stuck badly -- direct evidence
+# from the sample-buffer db, not just slow logs: tool_use+multi_critic
+# seed=4 finished all 250 samples in 10 minutes, seed=5 (same config)
+# did only 10/250 samples in 10h47m before being killed. Same
+# "occasional unavailability" failure mode already documented for
+# Qwen3-32B on flex (one request took 30 min). Costs ~25% more on
+# gemma's remaining calls but trades away a demonstrated 270x slowdown.
 FLEX_TIER_MODELS = {
-    "openai-api/deepinfra/google/gemma-3-27b-it",
     "openai-api/deepinfra/Qwen/Qwen2.5-72B-Instruct",
 }
 
@@ -297,6 +305,19 @@ def run_for_model(model: str, critic_model: str):
                 max_connections=MAX_CONNECTIONS,
                 max_tokens=MAX_TOKENS,
                 extra_body=extra_body_for(model),
+                # Default fail_on_error=True aborts the ENTIRE run (all
+                # 500/250 samples -> accuracy=NaN) the moment a single
+                # sample errors -- confirmed this is exactly why
+                # tool_use's context-window-overflow failures (see
+                # elicit_task.py's tool_use comment) were wiping out
+                # whole seeds instead of just costing one wrong answer.
+                # score_on_error scores the errored sample as incorrect
+                # instead of excluding it, so n stays the intended
+                # sample size. Pure harness robustness -- doesn't change
+                # what tool_use measures, unlike a tool-call round cap
+                # would (see process_log.md's "declined" entry on that).
+                fail_on_error=0.02,
+                score_on_error=True,
             )[0]
             acc = get_accuracy(log)
             log_path = str(log.location) if hasattr(log, "location") else None
