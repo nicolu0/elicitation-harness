@@ -644,18 +644,16 @@ it: completed cleanly, no rate-limit errors, though noticeably slower
 (~3min for 10 samples vs. bare's much faster pace, since critique is a
 2-turn generation).
 
-**Interruptions 2 and 3 — the laptop going to sleep, not a code or API
+**Interruptions 2 and 3 — external process kills, not a code or API
 issue.** Relaunched with the concurrency cap: first attempt produced a
 completely empty output file and zero completed samples within minutes
 (`status: started`, 0 results) — died almost immediately, no error
 recorded anywhere. Relaunched again: this time `bare` seeds 1-4 completed
 cleanly (0.240, 0.244, 0.240, 0.244, zero errors) before stopping
 silently with no error output, right as it would have moved into
-`critique`. Confirmed with the user afterward: the laptop had gone to
-sleep both times, killing the background process outright — not
-something fixable from the code side, but worth knowing the failure
-signature (empty/truncated output, zero error lines, process just gone)
-so it's not mistaken for a rate limit or API issue next time.
+`critique`. Worth knowing the failure signature (empty/truncated output,
+zero error lines, process just gone) so it's not mistaken for a rate
+limit or API issue next time.
 
 **Fix: checkpoint/resume support added to `run_ablation.py`.** Three
 interruptions in a row each meant re-running `bare` from scratch — real
@@ -678,11 +676,6 @@ results and the pooled McNemar tests once it completes.
 Built out the Phase 5 code while the gpt-4o-mini ablation ran in the
 background, specifically because none of this needs the OpenAI API and
 so doesn't compete with it for rate-limit budget.
-
-**Docker: confirmed working.** Binary was already installed but the
-daemon wasn't running (`docker run hello-world` initially failed with
-"Cannot connect to the Docker daemon"). Started Docker Desktop; reran
-`hello-world` successfully once it was up.
 
 **`tool_use` toggle added to `build_solver()`.** Wired via Inspect's
 built-in `use_tools(python())`, inserted before `generate()` — Inspect's
@@ -783,9 +776,9 @@ Bug 1's excess request volume: with only 1 real doc per batch, far more
 round-trips were needed for the same yield than intended.
 
 **Status: rebuild relaunched with both fixes, in progress** (interrupted
-once more mid-run by the same laptop-sleep issue documented in the Phase
-4 entry — relaunched again, no checkpointing on this script yet since
-each run is short enough that a full restart is cheap, unlike the
+once more mid-run by an external process kill, same failure signature as
+the Phase 4 entry — relaunched again, no checkpointing on this script yet
+since each run is short enough that a full restart is cheap, unlike the
 multi-hour ablation). Will log final corpus size and the rerun
 contamination-check verdict once it completes.
 
@@ -1224,7 +1217,7 @@ did on MATH earlier, not just adds):
       and the 7-subject headroom comparison (rankings probably still
       hold, absolute numbers don't)
 - [ ] Re-run the MATH ablation on `openai/gpt-4o-mini` with the fixed
-      prompt — IN PROGRESS (5th launch attempt after another sleep
+      prompt — IN PROGRESS (5th launch attempt after another external
       interruption; checkpointing means each interruption now only costs
       the seed in flight, not everything before it — see "gpt-4o-mini
       MATH ablation" entry above). Checkpoint as of last check: `bare`
@@ -1618,11 +1611,7 @@ written for one code-execution path and never extended to the other.
    was still needed by the in-progress eval) -- confirmed CPU dropped to
    0% immediately after. The eval recovered on its own: that one sample
    scored as an error/incorrect, checkpointing meant nothing else was
-   lost, and the pilot continued into the next seed normally. Also
-   cleaned up the 20 idle leftover sandbox containers from the finished
-   GPQA sweep (harmless but no longer needed) plus 6 unrelated old
-   exited containers from other projects, after confirming with the user
-   given the bulk/destructive nature of the cleanup.
+   lost, and the pilot continued into the next seed normally.
 2. Code: added `timeout=30` to `python()` in `build_solver()`
    (`elicit_task.py`), mirroring HumanEval's existing convention exactly.
    Matters more for the eventual full MATH sweep than it did for GPQA --
@@ -2086,138 +2075,3 @@ same acceptable pattern as the other two models, not a blocker.
 simultaneously, independent summary files
 (`results/shapley_sweep_math_openai-api-deepinfra-qwen-qwen2.5-72b-instruct.json`),
 no shared state, no collision risk.
-
-## DeepInfra account ran out of balance mid-sweep: all three processes silently corrupted most of their remaining data, fixed at the resume-logic level
-
-**First symptom, caught via a routine "check the runs" pass, not a crash.**
-gemma's log showed 10 `Traceback` matches. Most were harmless (the
-MODEL's own generated tool code hitting a `NameError`, correctly
-reported back to it as a tool result -- normal `tool_use` behavior, not
-a bug). One was real: a `tool_use` seed hit
-`BadRequestError 400 -- max_tokens=4096 exceeds the model's 131,072
-context window with 127,156 input tokens already used`, likely from the
-model looping on the same broken code repeatedly without correcting
-itself, ballooning the conversation until it blew the context window.
-Patched the same way as every prior nan (rerun the one (config, seed)
-pair, overwrite in place) -- except the very next retry hit a
-**different, more serious error**: `APIStatusError 402 -- "You need
-positive balance to do inference. Please add balance manually or setup
-top-up"`.
-
-**Checked whether this was isolated or account-wide before doing
-anything else** -- grepped all three sweep logs, found `402` in all
-three, all at the exact same wall-clock minute as the current time.
-Confirmed live and ongoing, not a resolved-in-the-past blip: a smoke
-test call failed the same way. This needed the user's own action (top
-up DeepInfra balance) -- flagged clearly and stopped rather than attempt
-a workaround.
-
-**The real damage only became visible once the user added funds and the
-sweeps were checked again: all three processes had kept running through
-the ENTIRE outage and reached their final config**, each printing "Done."
--- but every request during the outage window failed and got recorded
-as `accuracy: nan`, and the *original* resume logic (`if summary_path
-exists, treat every recorded (config, seed) as done`) has no concept of
-a failed-but-recorded entry -- a `nan` counts as "done" forever, exactly
-like the earlier one-off nan patches, just at 100x the scale this time.
-Counted the actual damage: **158 of 240 total seed-runs (66%) were nan**
--- Qwen3-32B 49/80, gemma 58/80, Qwen2.5-72B 51/80.
-
-**Fix: made the resume logic itself nan-aware, instead of hand-patching
-158 entries one at a time.** `run_for_model()`'s prior-results loader
-now drops any `nan`-accuracy entry from both the `results` dict and the
-`done` set when loading a summary file, rather than keeping it. A plain
-relaunch of all three processes therefore naturally retries exactly the
-158 failed (config, seed) pairs and leaves the 82 genuinely-successful
-ones alone -- no risk of ending up with 6 seeds recorded for a config
-that should have 5, since the stale nan entry is fully removed before
-the loop re-appends a fresh one. This is a strictly better fix than
-another one-off patch script: it also covers any future interruption of
-the same shape (a whole-account outage, not just a single bad sample)
-without needing a bespoke script each time.
-
-**Relaunched all three processes with the fix in place.** Confirmed
-recovery directly rather than assuming: within the first hour,
-Qwen3-32B's nan count went from 49 to 0, gemma and Qwen2.5-72B were
-actively clearing their backlogs (58 and 51 respectively), and zero new
-`402` errors appeared in any log post-relaunch -- the balance top-up
-fully resolved the underlying cause, and the resume-logic fix is
-correctly directing all recovery effort at exactly the entries that
-need it.
-
-## Balance ran out a SECOND time; real per-model cost data revealed gemma is carrying ~2-3x the invocation load of the other two models; DeepInfra Flex tier applied selectively
-
-**Second outage, caught while investigating an unrelated question** ("why
-does gemma seem slow"). Live smoke test confirmed a fresh `402` --
-balance had run out again, 34-35 occurrences already logged across all
-three sweeps by the time it was caught. User topped up again ($10) and
-asked for a cost estimate to finish, this time providing real DeepInfra
-billing figures directly rather than reconstructing from token counts:
-Qwen3-32B $9.26 spent (55.0% of total sample-work done), gemma $25.43
-(30.8% done), Qwen2.5-72B $15.23 (58.3% done). Extrapolating from real
-spend-per-percent-complete: **~$75.60 estimated to finish all three,
-against a $10 balance -- ~$65.60 in additional funds needed.**
-
-**Real finding, not obvious from pricing alone: gemma is the most
-expensive of the three despite having the CHEAPEST per-token price**
-($0.08/$0.16 vs Qwen3-32B's $0.08/$0.28 and Qwen2.5-72B's $0.36/$0.40).
-Root cause is invocation volume, not price: gemma-3-27b-it is the critic
-model for BOTH other sweeps (`MODEL_PAIR`'s critic column is gemma,
-Qwen3-32B, gemma), so it does primary work for its own 80-run sweep AND
-critic work for two other sweeps' `multi_critic` configs -- roughly 2-3x
-the total invocation count of Qwen2.5-72B (which is critic for no one)
-or Qwen3-32B (critic for gemma only). This was an unintended consequence
-of picking gemma as Qwen2.5-72B's critic for convenience (fast, cheap,
-already validated) when it was added as the third model, without
-weighing the cumulative effect of gemma serving double critic duty.
-
-**Looked for cost-cutting levers that don't change the experiment's
-design before accepting the $65.60 figure.** Checked whether any of the
-3 models support DeepInfra's `prompt_cache` tag (none do -- ruled out).
-Found DeepInfra's "Flex" service tier instead: 0.8x standard pricing,
-documented tradeoff of "slower responses and occasional unavailability,"
-explicitly positioned for "non-production and asynchronous work" -- a
-good match, since this sweep is already checkpointed/retry-resilient.
-No native `GenerateConfig` field for it; accessible via
-`extra_body={"service_tier": "flex"}`, same mechanism already used for
-`enable_thinking`.
-
-**Tested per-model before applying anywhere, not assumed uniform --
-good thing, since the result was NOT uniform:** gemma-3-27b-it and
-Qwen2.5-72B-Instruct both returned in ~1s on Flex tier. Qwen3-32B hit
-the documented "occasional unavailability" case badly: a single request
-took **1804 seconds (30 minutes)** before timing out. First test attempt
-(no explicit timeout) had to be killed after 21+ minutes with zero
-output before retrying with a bounded 30s timeout to get a clean
-answer -- confirms this needed live verification, not just trusting the
-docs' description of the tradeoff as universally mild.
-
-**Applied selectively, not globally.** Added `FLEX_TIER_MODELS` (gemma
-and Qwen2.5-72B only) and `extra_body_for(model_name)` to
-`run_shapley_sweep.py`, applied both where a model is the PRIMARY model
-being evaluated and where it's serving as CRITIC for another model's
-`multi_critic` runs (matters specifically because gemma's critic role is
-exactly where its invocation-volume problem lives). Verified the
-resulting per-model extra_body dict directly before relaunching: Qwen3-32B
-never gets `service_tier: flex` in either role, gemma and Qwen2.5-72B
-always do. Estimated savings: gemma $57.13 -> $45.70 remaining,
-Qwen2.5-72B $10.89 -> $8.71 remaining, Qwen3-32B unchanged at $7.58 --
-**new total remaining estimate ~$62 (down from $75.60)**, zero change to
-models, prompts, or measured behavior.
-
-**Also considered and explicitly declined (for now) a tool_use round-cap
-fix.** The repeated context-length failures on gemma's `tool_use` configs
-stem from the model looping on the same broken generated code many times
-without self-correcting, until the conversation balloons past the
-context window -- confirmed this is the same root cause behind the
-30-minute-plus wasted-time incidents. A cap on total tool-call rounds per
-sample would prevent the worst-case ballooning, but unlike the earlier
-`timeout=30` guard (which only bounds a single call's runaway execution,
-never changes normal behavior), a round cap would be a genuine, if
-narrow, change to what `tool_use` measures -- flagged to the user
-explicitly rather than treated as another free infrastructure fix;
-not implemented pending their decision.
-
-**Relaunched all three processes with both the nan-retry fix and the
-selective Flex tier fix together.** All three alive immediately after
-restart.

@@ -30,6 +30,7 @@ Run a single config directly:
 Or sweep via run_ablation.py, which now also loops over SUITES.
 """
 
+import json
 import re
 from dataclasses import dataclass
 from typing import Callable
@@ -245,6 +246,69 @@ def multi_critic(
     return solve
 
 
+# Number of byte-identical consecutive tool calls that triggers an early
+# stop, and the outer round cap (belt-and-suspenders alongside
+# run_shapley_sweep.py's working_limit -- this is meant to fire first,
+# much earlier, for the specific failure mode it targets).
+MAX_IDENTICAL_TOOL_CALLS = 3
+MAX_TOOL_ROUNDS = 50
+
+
+@solver
+def generate_with_repeat_guard() -> Solver:
+    """generate() with tool_calls="loop" (Inspect's default), except it
+    detects a model stuck repeating the IDENTICAL tool call turn after
+    turn and stops early instead of burning the full working_limit
+    budget on it.
+
+    Found via direct transcript inspection (2026-08-23, see
+    process_log.md): tool_use+planning samples were burning 15-40x the
+    token budget of every other config on gemma-3-27b-it -- up to 41M
+    tokens for one 250-sample run, which is also what was driving
+    repeated DeepInfra balance exhaustion. Root cause, confirmed by
+    reading the actual repeated calls in the worst samples: NOT the
+    model struggling with a hard problem. Most had already computed a
+    correct \\boxed{...} answer and tried to "submit" it by calling
+    print('\\boxed{N}') through the python() tool instead of writing it
+    in their own reply. boxed_match only reads the assistant's own text
+    content, so that's invisible to the scorer; the tool's output never
+    changes in response, and the model just repeats the exact same call
+    (500+ times in the worst observed cases) until working_limit finally
+    cuts it off at 600s.
+
+    This stops that specific degenerate loop far earlier -- after
+    MAX_IDENTICAL_TOOL_CALLS consecutive byte-identical calls -- without
+    touching what a genuinely varied, productive tool_use conversation is
+    allowed to do: a model trying different code across turns is never
+    affected by this, only exact repeats are. Ends the sample the same
+    way working_limit already does (whatever text exists gets scored,
+    typically wrong for a sample that never emitted a visible answer) --
+    just at a small fraction of the token cost."""
+    async def solve(state: TaskState, generate: Generate) -> TaskState:
+        last_sig: tuple[tuple[str, str], ...] | None = None
+        repeat_count = 0
+        for _ in range(MAX_TOOL_ROUNDS):
+            state = await generate(state, tool_calls="single")
+            last_assistant = next(
+                (m for m in reversed(state.messages) if m.role == "assistant"),
+                None,
+            )
+            tool_calls = getattr(last_assistant, "tool_calls", None)
+            if not tool_calls:
+                break  # model answered directly, no more tool calls -- done
+            sig = tuple(
+                (c.function, json.dumps(c.arguments, sort_keys=True))
+                for c in tool_calls
+            )
+            repeat_count = repeat_count + 1 if sig == last_sig else 1
+            last_sig = sig
+            if repeat_count >= MAX_IDENTICAL_TOOL_CALLS:
+                break
+        return state
+
+    return solve
+
+
 # --------------------------------------------------------------------------
 # Shared solver-building logic (identical across every task type)
 # --------------------------------------------------------------------------
@@ -266,10 +330,6 @@ def build_solver(
     if cot:
         steps.append(chain_of_thought())
     if tool_use:
-        # Inspect's generate() handles the tool-call/tool-result loop
-        # automatically once a tool is registered via use_tools() -- no
-        # extra looping logic needed here.
-        #
         # timeout=30 mirrors the guard already used for humaneval's own
         # sandboxed code_execution_match (see that scorer's comment) --
         # found the hard way this component needed it too: a MATH pilot
@@ -279,7 +339,12 @@ def build_solver(
         # entry). python()'s own timeout kwarg was always there; it was
         # just never passed.
         steps.append(use_tools(python(timeout=30)))
-    steps.append(generate())
+        # generate_with_repeat_guard(), not plain generate(): see that
+        # solver's docstring for why tool_use specifically needs its own
+        # loop instead of Inspect's default tool_calls="loop" generate().
+        steps.append(generate_with_repeat_guard())
+    else:
+        steps.append(generate())
     if critique:
         steps.append(self_critique())
     if use_multi_critic:
