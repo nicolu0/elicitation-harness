@@ -307,7 +307,14 @@
         "limit": 500
       }
     ],
-    "critique+multi_critic": [],
+    "critique+multi_critic": [
+      {
+        "seed": 1,
+        "accuracy": 0.448,
+        "log": "/Users/nicoluo/dev/elicitation-harness/logs/2026-08-24T02-23-16-00-00_elicit_EH5K2vvCeGBxGDTm7i7saW.eval",
+        "limit": 250
+      }
+    ],
     "critique+planning": [],
     "critique+planning+multi_critic": [
       {

@@ -190,25 +190,3 @@ by a wide, clearly-nonzero, FDR-corrected margin. This is the
 steelman-resistant claim in this dataset, the one most likely to still
 be real once the CoT-leak issue is fixed.
 
-## What would change this writeup
-
-Two of the original four action items are done, on the statistical
-rigor side. The two that touch validity and scope are still open.
-
-1. ~~Fix `shapley_significance_test.py` for non-uniform per-config `n`~~.
-   **Done.** See the significance-testing note and tables above.
-2. ~~Apply a real multiple-comparisons correction~~. **Done.** BH-FDR
-   across all 20 tests, results in the tables above.
-3. **Still open.** Either enforce the bare-condition format (reject/retry
-   non-compliant completions) or explicitly quantify the CoT-leak rate
-   across the full dataset (not just 12 samples), and report bare
-   accuracy both as-is and with leaked-CoT samples excluded, so the
-   `tool_use` sign-flip claim can be checked against a clean baseline.
-   This is the single biggest remaining threat to trusting claim #3 as
-   a genuine cross-model transfer finding rather than a validity
-   artifact.
-4. **Still open.** Add gemma once its sweep finishes. This is 2 of 3
-   models, and the project's own framing (README: "similar scale,
-   different families") means the real transfer claim needs the third
-   leg. `shapley_significance_test.py`'s fix above applies unchanged to
-   gemma's data (same non-uniform-`n` issue, same fix).
