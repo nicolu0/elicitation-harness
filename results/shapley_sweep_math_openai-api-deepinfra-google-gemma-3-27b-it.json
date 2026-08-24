@@ -299,6 +299,12 @@
         "accuracy": 0.4375,
         "log": "/Users/nicoluo/dev/elicitation-harness/logs/2026-08-23T23-35-42-00-00_elicit_G5E3r4Hj2JqX94noa4jmAb.eval",
         "limit": 500
+      },
+      {
+        "seed": 5,
+        "accuracy": 0.396,
+        "log": "/Users/nicoluo/dev/elicitation-harness/logs/2026-08-24T02-04-03-00-00_elicit_5Kiz8pyZZvjz8HjwT5yq45.eval",
+        "limit": 500
       }
     ],
     "critique+multi_critic": [],
