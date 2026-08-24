@@ -1,14 +1,5 @@
 # Findings (in progress, 2 of 3 models)
 
-**Status: partial.** This covers `Qwen2.5-72B-Instruct` and `Qwen3-32B`,
-both complete (16 configs × 5 seeds × [500 or 250] samples, MATH
-intermediate_algebra, DeepInfra). `gemma-3-27b-it`'s identical sweep is
-still running. This is a two-model headstart. The project is scoped for
-a three-model cross-model transfer result (Methodology's "Cross model
-transfer" section, README's "questions we test" #3). Re-run
-`shapley_attribution.py` on all three once gemma finishes, and replace
-this file rather than append to it.
-
 **Significance testing is fixed and now uses the rigorous per-sample
 method.** `shapley_significance_test.py` originally crashed on this
 data (`AssertionError: critique: sample-level point estimate 0.0661 !=
