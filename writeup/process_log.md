@@ -2188,3 +2188,103 @@ to trigger the loop case directly (inherently hard to force on demand).
 restarting with the fix came back at **1.37M tokens** (accuracy 0.318,
 12m46s) -- back in line with the healthy ~1-2M baseline, down from the
 15-41M range these exact configs were hitting before.
+
+## Writeup headstart on the 2 completed models (Qwen2.5-72B, Qwen3-32B) -- two real gaps found while writing it up, not just numbers copied in
+
+Wrote `writeup/findings.md` for the two models that finished
+(`gemma-3-27b-it` still sweeping). Ran `shapley_attribution.py` on both
+-- full results and discussion in that file, not duplicated here -- but
+two things came up in the process worth logging as their own findings,
+since they affect how much to trust the numbers, not just what the
+numbers are.
+
+**`shapley_significance_test.py` (the more-rigorous, sample-level
+method that overturned 2 of 3 seed-bootstrap findings back in the GPQA
+study) crashes on this MATH data.** `AssertionError: critique:
+sample-level point estimate 0.0661 != coalition-mean estimate 0.0689`.
+Root cause: that script assumes every coalition shares one fixed `n`
+(true for GPQA, n=198 everywhere) -- false for this sweep, where the 8
+`multi_critic=True` configs run at `n=250` (the `MULTI_CRITIC_LIMIT` cut
+from the "cutting the sweep further" entry above) and the other 8 run
+at `n=500`. Not fixed yet -- `findings.md`'s numbers currently rest on
+the less-trustworthy seed-bootstrap CIs only, flagged explicitly there.
+Needs the per-coalition weighting fixed to account for mixed `n` before
+the sample-level test can run on any MATH-sweep data (not just these
+two files -- gemma's will hit the identical bug).
+
+**Real validity-hazard finding, not previously confirmed on this
+dataset: Qwen3-32B leaks visible chain-of-thought into the bare
+condition in most sampled transcripts.** Read 12 random bare-condition
+transcripts per model (partial spot-check, not the full Phase-4 >=30 --
+flagged as such). Qwen2.5-72B: 0/12 leaked, every answer a bare
+`\boxed{...}`, 9-20 characters. Qwen3-32B: **8/12** leaked -- full
+step-by-step derivations up to 8,329 characters, despite
+`enable_thinking: false` already applied and the system prompt saying
+"do not show your work or explain your reasoning." This is the same
+reasoning-mode issue documented in the "switch to DeepInfra" entry
+(that fix cut one sample's output 1977->5 tokens) -- turns out that fix
+only suppresses the *hidden* thinking channel; the model still often
+reasons directly in its visible reply, ignoring the format instruction.
+Practical consequence, spelled out in `findings.md`'s steelman section:
+Qwen3-32B's bare baseline (0.564) is likely inflated by free CoT-like
+reasoning the prompt failed to suppress, which is a plausible
+alternative explanation for why `tool_use`/`critique` show *negative*
+main effects on this model specifically (less real headroom left once
+bare is already getting CoT for free) -- rather than those components
+genuinely hurting Qwen3-32B. Not resolved -- either enforce the bare
+format (reject/retry non-compliant completions) or quantify the leak
+rate on the full dataset and report bare accuracy both ways, before
+trusting the cross-model `tool_use` sign-flip as a clean finding.
+
+## Fixed `shapley_significance_test.py` for non-uniform `n`, and applied a real multiple-comparisons correction
+
+Two of the four open items from the writeup-headstart entry above,
+closed under time pressure (user needs results tonight) since both were
+pure statistical-rigor fixes, not decisions that change what's being
+measured.
+
+**Fix: restrict every coalition's mean to the sample IDs shared across
+all 16 coalitions an effect touches, instead of comparing against each
+coalition's own full-`n` mean.** Since every Shapley main effect's
+linear combination spans all 16 coalitions (it averages a component's
+marginal contribution over every context of the other three), it always
+touches at least one `multi_critic=True` (n=250) coalition -- so the
+valid shared sample set is capped at 250 for every single effect, not
+just ones naming `multi_critic`. Added `restricted_coalition_means()`
+and changed `report_test()`'s sanity-check assertion to compare against
+that restricted value instead of `shapley_attribution.py`'s full-`n`
+headline number -- same principle `mcnemar_test.py` already relies on
+(paired comparisons need the identical question set, not just the same
+count). Ran clean on both completed models: n=1250 (250 samples x 5
+seeds) per test, assertion passes, no crash.
+
+**Result: every main effect on both models is significant (Wilcoxon
+p<0.01, most <0.0001), and 3 of 6 interactions per model.** Point
+estimates from the restricted method are close to but not identical to
+the seed-bootstrap numbers (drift of ~0.005-0.015, expected and
+reported per-line in the script's output) -- e.g. Qwen2.5-72B `critique`
++0.066 (restricted) vs +0.069 (full-n headline). `tool_use` x
+`multi_critic` is the standout interaction: strongly negative on
+Qwen2.5-72B (-0.121, p<0.0001) and positive on Qwen3-32B (+0.067,
+p<0.0001) -- a confirmed, significant, opposite-sign interaction-level
+finding between the two models, not just a main-effect-level one.
+
+**Multiple comparisons: Benjamini-Hochberg FDR correction, alpha=0.05,
+across all 20 tests (4 main effects + 6 interactions x 2 models), using
+the Wilcoxon p-value.** No `statsmodels` in the venv, implemented BH
+directly (sort p-values, find the largest rank `i` where p_i <=
+(i/m)*alpha, everything at or below that rank survives) rather than add
+a new dependency under time pressure. **Every nominally-significant
+finding survives** -- all 8 main effects, 6 of 12 interactions. The
+correction ended up being a formality here, not a filter: almost every
+p-value that cleared 0.05 uncorrected was already far below it
+(<0.0001), so there was no borderline cluster for FDR to actually cut
+into.
+
+**Deliberately NOT touched, per explicit user direction ("figure out
+the leak later"):** the Qwen3-32B CoT-leak validity issue from the
+entry above is still open. Both fixes in this entry are orthogonal to
+it -- they make the significance TESTING more rigorous, they don't
+address whether the underlying bare-condition data is contaminated.
+`findings.md` updated to reflect both fixes, with the CoT-leak item and
+the still-pending gemma leg left as the two remaining open items.

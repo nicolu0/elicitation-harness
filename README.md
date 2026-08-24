@@ -92,13 +92,13 @@ flowchart LR
     R -.->|not yet built| A4["Budget axis +\ncost-per-solve frontier"]
 ```
 
-Each of the four components (`critique`, `tool_use`, `planning`, `multi_critic`) is a boolean toggle threaded through `build_solver()` in `elicit_task.py`, not a separate plugin package — adding a component means adding a toggle and a solver function in one file. `run_shapley_sweep.py` runs every 2⁴=16 on/off combination × 5 seeds × however many models are currently in `MODEL_PAIR`, checkpointing after every seed so an interrupted sweep resumes from wherever it left off instead of restarting.
+Each of the four components (`critique`, `tool_use`, `planning`, `multi_critic`) is a boolean toggle threaded through `build_solver()` in `elicit_task.py`. There's no separate plugin package; adding a component means adding a toggle and a solver function in one file. `run_shapley_sweep.py` runs every 2⁴=16 on/off combination × 5 seeds × however many models are currently in `MODEL_PAIR`, checkpointing after every seed. An interrupted sweep resumes from wherever it left off instead of restarting.
 
-Two of the original six components aren't in that sweep. `retrieval` was built (BM25 over a Wikipedia corpus) and then dropped — three real bugs plus an untested relevance question made it the least trustworthy component in the codebase, so it's commented out in `elicit_task.py` rather than deleted. `best_of_n` was never built: its whole point is trading off against a budget axis, and that axis doesn't exist yet. `chain_of_thought` (`cot`) does exist as a toggle, but it sits outside this sweep — it was measured in an earlier, separate bare/cot/critique/cot+critique ablation (`run_ablation.py`) on both suites, not one of the four components the current interaction study attributes credit to.
+Two of the original six components aren't in that sweep. `retrieval` was built (BM25 over a Wikipedia corpus) and then dropped. Three real bugs plus an untested relevance question made it the least trustworthy component in the codebase, so it's commented out in `elicit_task.py` instead of deleted. `best_of_n` was never built: its whole point is trading off against a budget axis, and that axis doesn't exist yet. `chain_of_thought` (`cot`) exists as a toggle but sits outside this sweep. It was measured in an earlier, separate bare/cot/critique/cot+critique ablation (`run_ablation.py`) on both suites; the current interaction study attributes credit to the other four toggles only.
 
-**Budget is not yet an axis.** `MAX_TOKENS` and `MAX_CONNECTIONS` in the runner scripts are fixed operational caps — needed to stay inside a model's context window and keep concurrency well-behaved — not something swept low/medium/high the way the components are. The component × budget substitution analysis described below is still on the roadmap, not implemented.
+**There's no budget axis yet.** `MAX_TOKENS` and `MAX_CONNECTIONS` in the runner scripts are fixed operational caps, needed to stay inside a model's context window and keep concurrency well-behaved. They aren't swept low/medium/high the way the components are. The component × budget substitution analysis described below is still on the roadmap; it hasn't been implemented.
 
-Models sit behind Inspect AI's provider layer, so switching models is a one-line config edit. The roster has already moved once: a Together-hosted pair (`Qwen2.5-7B-Instruct-Turbo` + `gemma-3n-E4B-it`) completed a full GPQA sweep; the study has since switched to DeepInfra (for cost) with three larger models — `Qwen3-32B`, `gemma-3-27b-it`, `Qwen2.5-72B-Instruct` — currently running the same 16-config sweep on MATH (intermediate_algebra).
+Models sit behind Inspect AI's provider layer, so switching models is a one-line config edit. The roster has already moved once. A Together-hosted pair (`Qwen2.5-7B-Instruct-Turbo` and `gemma-3n-E4B-it`) completed a full GPQA sweep, then the study switched to DeepInfra for cost with three larger models: `Qwen3-32B`, `gemma-3-27b-it`, and `Qwen2.5-72B-Instruct`. That trio is currently running the same 16-config sweep on MATH (intermediate_algebra).
 
 ## Components and the budget knob
 
@@ -108,13 +108,13 @@ Each component is one technique for getting more out of a model. The **mode** co
 |---|---|---|---|
 | Tool use (`tool_use`) | augments | Active | Lets the model call a sandboxed Python tool. Capped at a 30s per-call timeout and an identical-call repeat guard, added after a runaway tool-call loop on one model burned 15-40x the token budget of every other config in a sweep |
 | Self-critique (`critique`) | reveals | Active | The model reads its own answer and revises it (Inspect's built-in `self_critique()`) |
-| Multi-critic (`multi_critic`) | reveals | Active | A second model critiques and revises the primary model's answer — a thin wrapper around `self_critique(model=...)`. In the sweep the critic is always the other model in the pair, so it's a genuine cross-model check, not a duplicate of `critique` |
-| Planning (`planning`) | reveals | Active | A separate generation turn asks for a numbered plan before the model answers, followed by an explicit "now answer" instruction. The first version silently collapsed to near-zero accuracy because it lacked that follow-up instruction — the model just kept extending the plan |
-| Chain-of-thought (`cot`) | reveals | Built, separate ablation | Standard CoT. Measured in an earlier, standalone bare/cot/critique/cot+critique ablation on GPQA and MATH — not one of the four toggles in the current Shapley sweep |
+| Multi-critic (`multi_critic`) | reveals | Active | A second model critiques and revises the primary model's answer, using a thin wrapper around `self_critique(model=...)`. In the sweep the critic is always the other model in the pair, so it functions as a genuine cross-model check on top of `critique` |
+| Planning (`planning`) | reveals | Active | A separate generation turn asks for a numbered plan before the model answers, followed by an explicit "now answer" instruction. The first version silently collapsed to near-zero accuracy because it lacked that follow-up instruction; without it, the model just kept extending the plan instead of answering |
+| Chain-of-thought (`cot`) | reveals | Built, separate ablation | Standard CoT, measured in an earlier, standalone bare/cot/critique/cot+critique ablation on GPQA and MATH. It sits outside the four toggles in the current Shapley sweep |
 | Retrieval (`retrieval`) | augments | Dropped (code retained, commented out) | BM25 over a built Wikipedia corpus. Built, then dropped after three real bugs and an untested relevance question made it the least trustworthy component in the codebase |
 | Best-of-N (`best_of_n`) | reveals | Never built (deferred) | Generate N answers, pick one by voting or by judge. Deferred because its whole point is trading off against a budget axis, and that axis doesn't exist yet |
 
-There's no `Component` plugin class or protocol — the architecture is a monolithic `elicit_task.py`, and each active component is just a boolean parameter composed by one shared function:
+There's no `Component` plugin class or protocol. The architecture is a monolithic `elicit_task.py`; each active component is just a boolean parameter composed by one shared function:
 
 ```python
 def build_solver(
@@ -126,7 +126,7 @@ def build_solver(
     ...  # assembles system_message + whichever solver steps are toggled on, in a fixed order
 ```
 
-**There is no budget knob yet.** `MAX_TOKENS` and `MAX_CONNECTIONS` in the runner scripts are fixed per-run caps for cost and reliability, not a swept experimental axis — "budget" here means what the model is allowed to spend on a single call, not a variable this project has measured components against yet.
+**There is no budget knob yet.** `MAX_TOKENS` and `MAX_CONNECTIONS` in the runner scripts are fixed per-run caps for cost and reliability, not a swept experimental axis. "Budget" currently means what a single call is allowed to spend. Measuring components against budget as a variable is still future work.
 
 ## Methodology
 
@@ -146,15 +146,17 @@ def build_solver(
 
 ## Findings
 
-**Credit and interaction.** On `[small model]` with `[GPQA Diamond]`, `[two of four]` components account for `[roughly 80%]` of the total improvement. The interaction term is `[+N points]`, meaning the components `[amplify / interfere with]` each other and the harness is not the sum of its parts.
+**Status: 2 of 3 models (`Qwen2.5-72B-Instruct`, `Qwen3-32B`), MATH intermediate_algebra, DeepInfra.** `gemma-3-27b-it`'s identical sweep is still running, so this is a two-model headstart rather than the full cross-model result. Every number below comes from a real, FDR-corrected, sample-level significance test (`shapley_significance_test.py`, n=1250 paired observations per test, Benjamini-Hochberg correction across all 20 tests). Full detail lives in [`writeup/findings.md`](writeup/findings.md), including a validity caveat that changes how the `tool_use` finding should be read. Check that file before citing any of these numbers elsewhere.
 
-**Substitution with budget.** `[best_of_n / planning]` contributes `[+X at low budget and roughly nothing at high budget]`, while `[tool_use]` holds steady at `[+Y]` across the whole range. Read that as: `[best-of-N]` mostly buys what extra compute would have bought you anyway, and `[tool use]` buys something compute can't.
+**Credit and interaction.** On `Qwen2.5-72B-Instruct`, `multi_critic` alone (+0.161, p<0.0001) accounts for 43% of the entire four-component lift (bare 0.263 to full-stack 0.636, +0.373 total). `tool_use` follows at +0.107, `critique` at +0.066, `planning` at +0.028; all four main effects are significant. The interaction term between `tool_use` and `multi_critic` is −0.121 (p<0.0001), meaning the two strongest individual components actively work against each other when combined. On `Qwen3-32B`, the whole four-component harness barely moves accuracy at all (+0.009 total, inside noise). `multi_critic` still lands positive and significant at +0.073, but `tool_use` (−0.076) and `critique` (−0.015) are small and negative, wiping out most of that gain.
 
-**Transfer across models.** The component rankings correlate at `[ρ = 0.?]` between `[Qwen2.5-7B]` and `[Gemma-3n-E4B]` — similar scale, different families, so this measures whether attribution generalizes across model families rather than across model size within one family. `[If that number is low:]` the same fixed harness leaves `[Z points]` more on the table for `[one model]` than for `[the other]`, which means a fixed harness comparison is `[tilted toward / against]` one family in a way that running more seeds won't fix.
+**Substitution with budget.** Not yet measured. Budget isn't an axis in this study yet (see Limitations).
 
-**Flipped comparisons.** With a `[low budget standardized]` harness, `[A beats B]`. With `[max effort elicitation]`, `[B beats A]`. Same models and same tasks, opposite verdict, decided by a harness choice that usually doesn't make it into the writeup.
+**Transfer across models.** Ranking the four components by main-effect size gives Spearman ρ = 0.2 between `Qwen2.5-72B-Instruct` and `Qwen3-32B`, close to no correlation. `multi_critic` (rank 1 on both) and `critique` (rank 3 on both) agree. `tool_use` and `planning` swap positions entirely, and `tool_use`'s effect flips sign between the two models (+0.107 vs −0.083, both significant, both surviving correction). With only 4 components, ρ carries wide uncertainty on its own, so read 0.2 as a signal worth investigating further rather than a settled number.
 
-If it turns out that credit is spread evenly, budget doesn't interact with anything, rankings transfer cleanly, and nothing flips, then standardized harnesses are safe and we report exactly that.
+**Flipped comparisons.** Bare, `Qwen3-32B` beats `Qwen2.5-72B-Instruct` by a wide margin (0.564 vs 0.263). Fully scaffolded, `Qwen2.5-72B-Instruct` edges ahead instead (0.636 vs 0.573). One important caveat here: a spot-check of `Qwen3-32B`'s bare-condition transcripts found visible chain-of-thought leaking into 8 of 12 sampled answers, despite the system prompt saying not to show its work. That likely inflates its bare score with reasoning the harness wasn't supposed to be crediting it for. Both this flip and the `tool_use` sign flip above are statistically solid, but they shouldn't be treated as fully clean results until that leak gets fixed or measured at scale (open item, see `writeup/findings.md`).
+
+If credit turns out to be spread evenly, budget doesn't interact with anything, rankings transfer cleanly, and nothing flips, standardized harnesses are safe and that's exactly what we'd report. So far, the data isn't showing that.
 
 ## How this maps onto evaluation vocabulary
 
@@ -164,7 +166,7 @@ The interesting quantity is the distance between those two, measured separately 
 
 ## Repo structure
 
-The logic lives in root-level scripts, not the `src/elicit/` package layout an earlier version of this README described — that package is still just empty stubs.
+The logic lives in root-level scripts. An earlier version of this README described a `src/elicit/` package layout instead; that package still exists only as empty stubs.
 
 ```
 elicitation-harness/
@@ -182,15 +184,15 @@ elicitation-harness/
 ├── results/                       # raw outputs (accuracy per config/seed, log paths), committed
 ├── suites/                        # retrieval corpus + contamination report
 ├── logs/                          # full Inspect transcripts (.eval files)
-├── src/elicit/                    # early package skeleton — unused stubs, not the real architecture
+├── src/elicit/                    # early package skeleton, unused stubs
 └── writeup/
-    ├── process_log.md             # running record of what was tried, what broke, what was found
+    ├── process_log.md             # running record of what was tried and what was found
     └── ...                        # the eventual polished report
 ```
 
 ## Reproducibility
 
-Pinned dependency versions (`requirements.txt`), fixed seeds, `results/` committed to the repo with every run checkpointed after each seed, and full transcripts saved through Inspect (`logs/`). Every reported statistic is recomputed directly from `results/` by its own script (`mcnemar_test.py`, `shapley_attribution.py`, `power_analysis.py`) — there's no separate figure-generation step yet, so "regenerate the figures" isn't a real command at this point.
+Pinned dependency versions (`requirements.txt`), fixed seeds, `results/` committed to the repo with every run checkpointed after each seed, and full transcripts saved through Inspect (`logs/`). Every reported statistic is recomputed directly from `results/` by its own script (`mcnemar_test.py`, `shapley_attribution.py`, `power_analysis.py`). There's no separate figure-generation step yet, so "regenerate the figures" isn't a real command at this point.
 
 Even at temperature 0, model outputs are not perfectly reproducible. Batching, hardware differences, and floating point ordering all introduce small variations. Every number here is a mean over multiple seeds with an interval attached rather than a single run reported as fact.
 

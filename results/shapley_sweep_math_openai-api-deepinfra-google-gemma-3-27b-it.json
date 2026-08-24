@@ -235,6 +235,12 @@
         "accuracy": 0.3,
         "log": "/Users/nicoluo/dev/elicitation-harness/logs/2026-08-24T01-17-49-00-00_elicit_4BRKQwbxDMBKkwoq9jcqnW.eval",
         "limit": 500
+      },
+      {
+        "seed": 5,
+        "accuracy": 0.328,
+        "log": "/Users/nicoluo/dev/elicitation-harness/logs/2026-08-24T01-31-12-00-00_elicit_ejZBVv4JKjmn6cWLZq5gNW.eval",
+        "limit": 500
       }
     ],
     "tool_use+planning+multi_critic": [
@@ -260,6 +266,12 @@
         "seed": 5,
         "accuracy": 0.316,
         "log": "/Users/nicoluo/dev/elicitation-harness/logs/2026-08-23T22-29-53-00-00_elicit_ccaEywZvxMwWfJhz6exNVy.eval",
+        "limit": 250
+      },
+      {
+        "seed": 1,
+        "accuracy": 0.336,
+        "log": "/Users/nicoluo/dev/elicitation-harness/logs/2026-08-24T01-50-29-00-00_elicit_D2McAL7QXiETb3KCiATgUf.eval",
         "limit": 250
       }
     ],
