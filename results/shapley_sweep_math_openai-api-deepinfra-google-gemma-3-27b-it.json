@@ -223,6 +223,18 @@
         "accuracy": 0.318,
         "log": "/Users/nicoluo/dev/elicitation-harness/logs/2026-08-24T00-51-01-00-00_elicit_byTdRbKzSeXspVao2GibxV.eval",
         "limit": 500
+      },
+      {
+        "seed": 3,
+        "accuracy": 0.338,
+        "log": "/Users/nicoluo/dev/elicitation-harness/logs/2026-08-24T01-03-48-00-00_elicit_m88KY86VytRRPcfHy5esRW.eval",
+        "limit": 500
+      },
+      {
+        "seed": 4,
+        "accuracy": 0.3,
+        "log": "/Users/nicoluo/dev/elicitation-harness/logs/2026-08-24T01-17-49-00-00_elicit_4BRKQwbxDMBKkwoq9jcqnW.eval",
+        "limit": 500
       }
     ],
     "tool_use+planning+multi_critic": [

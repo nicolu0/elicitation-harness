@@ -78,47 +78,55 @@ Model A beats model B with no scaffolding, then loses once both are fully scaffo
 
 ```mermaid
 flowchart LR
-    T["Task suite\nverifiable"] --> S
-    subgraph S[Harness · components toggled × budget swept]
+    T["Task suite\nverifiable\n(GPQA Diamond · MATH)"] --> S
+    subgraph S[Harness · 4 components toggled on/off]
       direction TB
-      C1[Tool use] ~~~ C2[Retrieval]
-      C3[Self-critique] ~~~ C4[Multi-critic]
-      C5[Best-of-N] ~~~ C6[Planning]
-      B[[Budget knob: tokens / retries / N]]
+      C1[Tool use] ~~~ C2[Self-critique]
+      C3[Multi-critic] ~~~ C4[Planning]
     end
-    S <-->|calls| M1["Model A\nfixed weights"]
-    S <-->|calls| M2["Model B\nfixed weights"]
-    S --> TR[Tracing + replay · token/cost accounting]
-    TR --> R["Sweep runner\n2^n configs × budgets × models × seeds"]
-    R --> A1["Credit assignment\n+ interaction term"]
-    R --> A2["Component × budget\nsubstitution map"]
-    R --> A3["Cross-model transfer\n+ fixed-harness deficit"]
-    R --> A4["Cost-per-solve\nfrontier"]
+    S <-->|calls| M["Model 1..N\nfixed weights"]
+    S --> R["Sweep runner\n2^4 configs × 5 seeds × N models\ncheckpointed + resumable"]
+    R --> A1["Shapley credit assignment\n+ pairwise interaction terms"]
+    R --> A2["Sample-level paired\nsignificance testing"]
+    R --> A3["Cross-model transfer\n(ranking comparison)"]
+    R -.->|not yet built| A4["Budget axis +\ncost-per-solve frontier"]
 ```
 
-Each component is a plugin you can switch on or off independently. Budget gets swept as an axis alongside the on/off switches, because otherwise there's no way to tell components and compute apart. The runner works through components × budget × model × seed, and the four analyses at the end are the output.
+Each of the four components (`critique`, `tool_use`, `planning`, `multi_critic`) is a boolean toggle threaded through `build_solver()` in `elicit_task.py`, not a separate plugin package — adding a component means adding a toggle and a solver function in one file. `run_shapley_sweep.py` runs every 2⁴=16 on/off combination × 5 seeds × however many models are currently in `MODEL_PAIR`, checkpointing after every seed so an interrupted sweep resumes from wherever it left off instead of restarting.
 
-Models sit behind Inspect AI's provider layer, so switching from `openai/gpt-4o-mini` to `together/Qwen/Qwen2.5-7B-Instruct-Turbo` is a one line config edit with no code changes.
+Two of the original six components aren't in that sweep. `retrieval` was built (BM25 over a Wikipedia corpus) and then dropped — three real bugs plus an untested relevance question made it the least trustworthy component in the codebase, so it's commented out in `elicit_task.py` rather than deleted. `best_of_n` was never built: its whole point is trading off against a budget axis, and that axis doesn't exist yet. `chain_of_thought` (`cot`) does exist as a toggle, but it sits outside this sweep — it was measured in an earlier, separate bare/cot/critique/cot+critique ablation (`run_ablation.py`) on both suites, not one of the four components the current interaction study attributes credit to.
+
+**Budget is not yet an axis.** `MAX_TOKENS` and `MAX_CONNECTIONS` in the runner scripts are fixed operational caps — needed to stay inside a model's context window and keep concurrency well-behaved — not something swept low/medium/high the way the components are. The component × budget substitution analysis described below is still on the roadmap, not implemented.
+
+Models sit behind Inspect AI's provider layer, so switching models is a one-line config edit. The roster has already moved once: a Together-hosted pair (`Qwen2.5-7B-Instruct-Turbo` + `gemma-3n-E4B-it`) completed a full GPQA sweep; the study has since switched to DeepInfra (for cost) with three larger models — `Qwen3-32B`, `gemma-3-27b-it`, `Qwen2.5-72B-Instruct` — currently running the same 16-config sweep on MATH (intermediate_algebra).
 
 ## Components and the budget knob
 
-Each component is one technique for getting more out of a model. The **mode** column marks whether it uncovers ability the model already had (reveals) or bolts on a capability the model didn't have (augments). Budget, meaning tokens, retries, and sample counts, gets swept separately so you can see components and raw compute trade off against each other.
+Each component is one technique for getting more out of a model. The **mode** column marks whether it uncovers ability the model already had (reveals) or bolts on a capability the model didn't have (augments). The **status** column tracks what actually happened to each of the original six, since two didn't make it into the current study.
 
-| Component | Mode | What it does |
-|---|---|---|
-| Tool use | augments | Lets the model call functions: run code, use a calculator |
-| Retrieval | augments | Pulls relevant documents into the prompt and cuts down on made up answers |
-| Self-critique | reveals | The model reads its own answer and revises it |
-| Multi-critic | reveals | Separate critic models score and argue over the answer. Watch out for circularity if the critic and the benchmark share assumptions |
-| Best-of-N | reveals | Generate N answers, pick one by voting or by judge, tied closely to budget |
-| Planning | reveals | Break the task into steps before doing any of them, helps on long tasks, often not worth the tokens on short ones |
+| Component | Mode | Status | What it does |
+|---|---|---|---|
+| Tool use (`tool_use`) | augments | Active | Lets the model call a sandboxed Python tool. Capped at a 30s per-call timeout and an identical-call repeat guard, added after a runaway tool-call loop on one model burned 15-40x the token budget of every other config in a sweep |
+| Self-critique (`critique`) | reveals | Active | The model reads its own answer and revises it (Inspect's built-in `self_critique()`) |
+| Multi-critic (`multi_critic`) | reveals | Active | A second model critiques and revises the primary model's answer — a thin wrapper around `self_critique(model=...)`. In the sweep the critic is always the other model in the pair, so it's a genuine cross-model check, not a duplicate of `critique` |
+| Planning (`planning`) | reveals | Active | A separate generation turn asks for a numbered plan before the model answers, followed by an explicit "now answer" instruction. The first version silently collapsed to near-zero accuracy because it lacked that follow-up instruction — the model just kept extending the plan |
+| Chain-of-thought (`cot`) | reveals | Built, separate ablation | Standard CoT. Measured in an earlier, standalone bare/cot/critique/cot+critique ablation on GPQA and MATH — not one of the four toggles in the current Shapley sweep |
+| Retrieval (`retrieval`) | augments | Dropped (code retained, commented out) | BM25 over a built Wikipedia corpus. Built, then dropped after three real bugs and an untested relevance question made it the least trustworthy component in the codebase |
+| Best-of-N (`best_of_n`) | reveals | Never built (deferred) | Generate N answers, pick one by voting or by judge. Deferred because its whole point is trading off against a budget axis, and that axis doesn't exist yet |
+
+There's no `Component` plugin class or protocol — the architecture is a monolithic `elicit_task.py`, and each active component is just a boolean parameter composed by one shared function:
 
 ```python
-class Component(Protocol):
-    name: str
-    mode: Literal["reveals", "augments"]
-    def wrap(self, call: ModelCall, ctx: TaskContext, budget: Budget) -> ModelCall: ...
+def build_solver(
+    cot: bool, critique: bool, system_prompt: str,
+    tool_use: bool = False, use_retrieval: bool = False, use_planning: bool = False,
+    use_multi_critic: bool = False, critic_model: str | None = None,
+    critic_config: GenerateConfig | None = None,
+):
+    ...  # assembles system_message + whichever solver steps are toggled on, in a fixed order
 ```
+
+**There is no budget knob yet.** `MAX_TOKENS` and `MAX_CONNECTIONS` in the runner scripts are fixed per-run caps for cost and reliability, not a swept experimental axis — "budget" here means what the model is allowed to spend on a single call, not a variable this project has measured components against yet.
 
 ## Methodology
 
@@ -156,26 +164,33 @@ The interesting quantity is the distance between those two, measured separately 
 
 ## Repo structure
 
+The logic lives in root-level scripts, not the `src/elicit/` package layout an earlier version of this README described — that package is still just empty stubs.
+
 ```
 elicitation-harness/
-├── src/elicit/
-│   ├── models/        # one interface for every provider, hosted or local
-│   ├── components/    # toggleable scaffold plugins, all budget-aware
-│   ├── budget/        # token/retry/N caps, swept as an axis
-│   ├── tasks/         # task loaders and scoring for verifiable tasks
-│   ├── runner/        # the components × budget × model × seed sweep, plus cost accounting
-│   ├── attribution/   # Shapley, interaction term, transfer metrics
-│   └── analysis/      # substitution map, fixed-harness deficit, cost-per-solve frontier
-├── experiments/       # studies as config files (transfer_and_budget.yaml, ...)
-├── results/           # raw outputs, committed
-├── figures/           # regenerated from results/
-├── suites/            # task suites
-└── writeup/           # the report / blog post
+├── elicit_task.py                # task/suite adapters (gsm8k, math, gpqa, humaneval) + every
+│                                  #   component toggle, composed by build_solver()
+├── run_ablation.py                # bare/cot/critique/cot+critique ablation sweep
+├── run_shapley_sweep.py           # 2^4-config × 5-seed × N-model Shapley sweep, checkpointed
+├── math_pilot.py                  # small pilot runs: headroom check + real per-component token costs
+├── power_analysis.py              # required-N per effect, from real pilot data
+├── mcnemar_test.py                # paired significance test (single-run and pooled modes)
+├── shapley_attribution.py         # exact Shapley values + pairwise interaction terms, bootstrap CIs
+├── shapley_significance_test.py   # sample-level paired significance test on Shapley effects
+├── spot_check.py                  # scorer false-positive/false-negative spot-checking
+├── build_retrieval_corpus.py      # Wikipedia corpus builder for the (currently dropped) retrieval component
+├── results/                       # raw outputs (accuracy per config/seed, log paths), committed
+├── suites/                        # retrieval corpus + contamination report
+├── logs/                          # full Inspect transcripts (.eval files)
+├── src/elicit/                    # early package skeleton — unused stubs, not the real architecture
+└── writeup/
+    ├── process_log.md             # running record of what was tried, what broke, what was found
+    └── ...                        # the eventual polished report
 ```
 
 ## Reproducibility
 
-Pinned model and dependency versions, fixed seeds, `results/` committed to the repo, one command to regenerate every figure, and full transcripts saved through Inspect.
+Pinned dependency versions (`requirements.txt`), fixed seeds, `results/` committed to the repo with every run checkpointed after each seed, and full transcripts saved through Inspect (`logs/`). Every reported statistic is recomputed directly from `results/` by its own script (`mcnemar_test.py`, `shapley_attribution.py`, `power_analysis.py`) — there's no separate figure-generation step yet, so "regenerate the figures" isn't a real command at this point.
 
 Even at temperature 0, model outputs are not perfectly reproducible. Batching, hardware differences, and floating point ordering all introduce small variations. Every number here is a mean over multiple seeds with an interval attached rather than a single run reported as fact.
 

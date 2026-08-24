@@ -2075,3 +2075,116 @@ same acceptable pattern as the other two models, not a blocker.
 simultaneously, independent summary files
 (`results/shapley_sweep_math_openai-api-deepinfra-qwen-qwen2.5-72b-instruct.json`),
 no shared state, no collision risk.
+
+## Repeated DeepInfra balance outages during the real MATH sweep, and two infrastructure fixes (`fail_on_error`/`score_on_error`, `working_limit`)
+
+The three-process MATH sweep hit the DeepInfra account balance running
+out **six separate times** over its run (first two documented as
+one-off "top up and relaunch" incidents; by the third+ it was clear this
+needed a real fix, not just repeated manual top-ups). Two real bugs
+found and fixed along the way, both pure harness robustness -- neither
+changes what any component measures.
+
+**Bug 1: a single sample error was aborting entire 500/250-sample
+runs.** `inspect_eval()`'s default `fail_on_error=True` means the FIRST
+sample error fails the whole run. Confirmed this was exactly why
+`tool_use`'s known context-window-overflow failures (see the
+`FLEX_TIER_MODELS` / round-cap entries above) were wiping out whole
+seeds to `accuracy=NaN` instead of costing one wrong answer out of
+500. Fixed by adding `fail_on_error=0.02` (tolerate up to 2% of samples
+erroring) and `score_on_error=True` (score the errored sample as
+incorrect instead of excluding it, so `n` stays the intended sample
+size) to the `inspect_eval()` call in `run_shapley_sweep.py`. Confirmed
+live: a later run logged `WARNING: 1 of 500 executed samples (0%) had
+errors` and still returned a real accuracy number instead of NaN.
+
+**Bug 2: `max_connections` doesn't bound local sandbox/subprocess work,
+and gemma's pool was starving.** `max_connections=20` only caps *model
+API* concurrency. Docker sandbox setup/exec/teardown for `tool_use`
+goes through a completely separate Inspect limiter, `max_subprocesses`,
+which defaults to `os.cpu_count()` -- 10 on this machine. Diagnosed via
+direct inspection of Inspect's live sample-buffer sqlite db (not just
+log timestamps): gemma sat at exactly 10 dispatched samples (8 already
+finished, 2 stuck) for 3+ hours straight with zero new samples picked
+up, because a single runaway `tool_use` sample was occupying one of
+only 10 subprocess-gated slots and the other finished slots weren't
+being backfilled. Fixed by adding `working_limit=600` (10-minute
+wall-clock cap per sample, excludes queue/retry wait so it doesn't
+misfire on a sample that's legitimately just waiting its turn) to the
+same `inspect_eval()` call. Confirmed live: gemma went from 1-2 active
+connections to a fully saturated 20 within 90 seconds of the restart,
+and picked up 24 new samples in the first 4 minutes vs. 10 over the
+prior 3+ hours.
+
+Also removed gemma from `FLEX_TIER_MODELS` partway through this same
+investigation (separate from the two fixes above): with both other
+sweeps finished, gemma had zero remaining critic-role contention but
+was *still* badly stuck -- direct sample-db evidence: the sibling
+`tool_use+multi_critic` seed=4 run finished all 250 samples in 10
+minutes, seed=5 (identical config) did only 10/250 samples in 10h47m
+before being killed. Same "occasional unavailability" failure mode
+already documented for Qwen3-32B on flex (one request took 30 minutes).
+Costs ~25% more on gemma's remaining calls but trades away a
+demonstrated 270x slowdown.
+
+## Root cause of gemma's `tool_use`+`planning` token blowup: a fixed-point tool-call loop, not the model struggling -- `generate_with_repeat_guard()`
+
+Even after the `working_limit` fix above, gemma's `tool_use`-with-
+`planning` configs were burning 15-40x the token budget of every other
+config: plain `critique` (n=500) runs consistently ~0.9-1.5M tokens;
+`tool_use+planning(+multi_critic)` runs hit **15.8M, 23.8M, 30.8M,
+31.7M, and 41.5M tokens** across five separate seeds/configs -- and this
+disproportionate burn rate is what was driving the repeated balance
+exhaustion above, concentrated specifically in these configs rather
+than spread evenly across the sweep.
+
+**Investigated by reading actual transcripts** (`inspect_ai.log.
+read_eval_log`, not just aggregate token counts) from the two worst
+runs. Found the outlier samples immediately: 6 of 250 samples in the
+41.5M-token run had **1100-1281 messages each** (vs. 16-20 for a normal
+sample). Pulling each outlier's tool-call arguments into a `Counter`
+showed every one was a single tool call repeated hundreds of times,
+byte-identical every time (`print(0)` x638; `print('\boxed{5}')` x589;
+`print('\boxed{1}')` x584; etc.). Cross-checked against a second,
+independent `tool_use+planning` run (31.7M tokens, no `multi_critic`) --
+same pattern, 5 of 6 outliers there also repeating an identical
+`print('\boxed{N}')` call 340-540 times.
+
+**Real finding: in most of these cases the model already had the right
+answer.** It wasn't stuck failing to solve the problem -- it had
+computed a correct value and wrapped it in valid `\boxed{...}` syntax,
+then tried to "submit" it by calling `python(print('\boxed{N}'))`
+instead of writing it in its own reply. `boxed_match` only reads the
+assistant's own text content, so a boxed answer sitting inside a tool
+call's arguments is invisible to the scorer. Since the tool's output
+never changes in response (`print()` just echoes back what was already
+known), the model has no new information to break the pattern and just
+repeats the identical call until `working_limit` finally cuts it off at
+600s -- correctly bounded in wall-clock time, but still burning hundreds
+of thousands of tokens per occurrence before that cutoff fires.
+
+**Fix: `generate_with_repeat_guard()` in `elicit_task.py`**, replacing
+the plain `generate()` step for `tool_use` configs only (non-`tool_use`
+configs are unaffected). Manually drives Inspect's `tool_calls="single"`
+mode in a loop (rather than relying on `generate()`'s default
+`tool_calls="loop"` auto-loop) so each round's tool call can be
+inspected: tracks the signature (function name + JSON-serialized
+arguments) of the most recent tool call, and breaks the loop after
+`MAX_IDENTICAL_TOOL_CALLS=3` consecutive byte-identical repeats (capped
+overall at `MAX_TOOL_ROUNDS=50` as an outer safety net, independent of
+`working_limit`). Ends the sample the same way `working_limit` already
+did -- whatever text exists gets scored, typically wrong for a sample
+that never emitted a visible answer -- just at a small fraction of the
+token cost, and specifically targeted so a model trying genuinely
+varied code across turns is never affected (only exact repeats trigger
+it).
+
+**Validated in two steps.** (1) `n=8` smoke test on the exact
+`tool_use+planning` config: completed cleanly in 53s total, 16,384
+tokens for all 8 samples combined, no errors -- confirms no regression
+to normal behavior, though this particular small sample didn't happen
+to trigger the loop case directly (inherently hard to force on demand).
+(2) Live on the actual sweep: the first `tool_use+planning` run after
+restarting with the fix came back at **1.37M tokens** (accuracy 0.318,
+12m46s) -- back in line with the healthy ~1-2M baseline, down from the
+15-41M range these exact configs were hitting before.
