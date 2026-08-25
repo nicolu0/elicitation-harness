@@ -43,6 +43,7 @@ import sys
 from pathlib import Path
 
 from inspect_ai import eval as inspect_eval
+from inspect_ai.log import read_eval_log
 from inspect_ai.model import GenerateConfig
 
 from elicit_task import elicit
@@ -255,9 +256,24 @@ def run_for_model(model: str, critic_model: str):
             # appends a fresh entry -- no manual per-entry patching
             # needed, and no risk of ending up with two entries for the
             # same (config, seed) once the retry succeeds.
+            #
+            # NaN-only was NOT enough -- found live on gemma's data
+            # (2026-08-24): fail_on_error=0.02 + score_on_error=True can
+            # produce a run where most/all samples errored (e.g. a
+            # balance outage) but score_on_error still scores the
+            # errored ones as wrong, so get_accuracy() returns a real
+            # (deflated, corrupted) float instead of NaN, even though
+            # the underlying log's own status is "error". That float
+            # silently passed the NaN check and got treated as
+            # permanently done. Found 4 such entries in gemma's 80 (one
+            # was accuracy=0.0 with 248/250 samples errored). Now also
+            # reads each entry's log header (cheap, no sample parsing)
+            # and drops it exactly like a NaN if status != "success".
             results[label] = []
             for r in runs:
-                if r["accuracy"] != r["accuracy"]:  # nan check
+                is_nan = r["accuracy"] != r["accuracy"]
+                status = None if is_nan else read_eval_log(r["log"], header_only=True).status
+                if is_nan or status != "success":
                     nan_count += 1
                     continue
                 results[label].append(
@@ -268,8 +284,8 @@ def run_for_model(model: str, critic_model: str):
             print(f"Resuming {summary_path}: {len(done)} (config, seed) runs "
                   f"already complete, skipping those.")
         if nan_count:
-            print(f"Dropped {nan_count} NaN (failed) entries -- these will be "
-                  f"retried this run.\n")
+            print(f"Dropped {nan_count} NaN/failed-status entries -- these "
+                  f"will be retried this run.\n")
 
     print(f"\n=== model={model}  critic_model={critic_model} "
           f"({len(CONFIGS)} configs x {len(SEEDS)} seeds) ===\n")

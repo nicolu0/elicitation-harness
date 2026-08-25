@@ -2288,3 +2288,107 @@ it -- they make the significance TESTING more rigorous, they don't
 address whether the underlying bare-condition data is contaminated.
 `findings.md` updated to reflect both fixes, with the CoT-leak item and
 the still-pending gemma leg left as the two remaining open items.
+
+## Gemma's sweep finished, then a real data-corruption bug was found while running the full 3-model attribution
+
+All three models hit 80/80 with 0 NaN. Started the real 3-model
+`shapley_attribution.py` run this was all leading up to. Gemma's cross-model
+numbers looked different enough from the other two (its biggest lever is
+`critique`, not `multi_critic`; `multi_critic` itself is not significant
+on gemma) that one coalition's huge seed-variance (`critique+planning+multi_critic`,
+seed stdev 0.22 versus ~0.01-0.03 everywhere else) got checked before
+trusting any of it, rather than written up as a real finding.
+
+**Found a real bug, not noise.** Seed 4 of that coalition had
+`accuracy=0.0`. Read the actual log: 248 of 250 samples had errored with
+`402` (a balance outage), not genuinely scored 0/250. The run's own
+`status` was `"error"` (correctly reflecting that `fail_on_error=0.02`'s
+threshold was blown past), but `score_on_error=True` still produced a
+real, non-NaN accuracy number from the few real samples plus the
+errored ones scored as wrong. The resume logic added earlier this
+session only checks for NaN to decide what to retry -- a technically-valid,
+badly-deflated float sailed straight past that check and got treated as
+permanently done.
+
+**Checked all 240 entries across all three models via each log's header
+(`read_eval_log(path, header_only=True).status`, cheap, no sample
+parsing).** Result: 72B and 32B are both completely clean, 0 bad
+entries -- consistent with them barely ever hitting a balance outage
+mid-run, unlike gemma which hit one repeatedly. Gemma has **4 of 80**
+entries with `status != "success"` that still carried a non-NaN
+accuracy: `tool_use+planning+multi_critic` seed=2 (57/250 errored,
+23%), `critique` seed=4 (196/500, 39%), `critique+planning+multi_critic`
+seed=4 (248/250, 99%), `critique+tool_use+planning+multi_critic` seed=3
+(140/250, 56%). All four exceed the 2% `fail_on_error` threshold by a
+wide margin -- these aren't borderline calls.
+
+**Fixed the resume logic itself, not just these 4 entries**, so this
+can't silently recur: `run_for_model()`'s prior-results loader now
+reads each entry's log header and drops it (exactly like a NaN) if
+`status != "success"`, in addition to the existing NaN check. A plain
+relaunch of `run_shapley_sweep.py 1` will now naturally retry exactly
+these 4 (config, seed) pairs and leave the other 76 genuinely-clean
+gemma entries alone.
+
+**Not yet done:** rerunning gemma with the fix to get clean data for
+these 4 entries, then re-running `shapley_attribution.py` and
+`shapley_significance_test.py` on the corrected gemma file before
+trusting any 3-model comparison. The numbers already computed and
+discussed above (gemma's `critique`-not-`multi_critic` pattern) are
+NOT yet validated against clean data and should not be treated as
+final until this rerun completes.
+
+## Full 3-model result, on clean data: the two-model `multi_critic` finding was wrong
+
+Reran gemma's 4 corrupted entries after the resume-logic fix above.
+Verified clean afterward (0 bad entries out of 80, same header-status
+check). Reran `shapley_attribution.py` and `shapley_significance_test.py`
+on all three models together, and computed the cross-model Spearman/Kendall
+rank correlations the Methodology section always called for but the
+two-model version couldn't do properly (only one pair to compare).
+
+**Confirms the earlier suspicion was right to check, but the exact
+numbers shifted slightly with clean data**, as expected: gemma's
+`critique+planning+multi_critic` seed stdev dropped from 0.22 (with the
+one corrupted 0.0 data point included) to 0.02 once fixed. `multi_critic`'s
+point estimate moved from -0.0008 (uncorrected pass, technically
+already not-significant) to +0.0057 -- still not significant (p=0.42
+on the sample-level test), so the corruption didn't fabricate the null
+finding, it just made the exact number slightly wrong along the way.
+
+**The real headline: `multi_critic` was flagged in the two-model
+version as the single most trustworthy finding in the dataset --
+positive on both models, largest effect, immune to the CoT-leak
+confound. It is not significant on gemma (p=0.42, point estimate
++0.006).** No component is positive and significant across all three
+models. `critique` and `planning` come closest (both significant on
+all three, but `critique` is negative on Qwen3-32B and `tool_use` is
+negative on two of three models). Wrote this up plainly in
+`findings.md` as a real instance of the project's own core failure mode
+(a two-model "universal" finding that was actually two-model-specific)
+rather than quietly revising the number and moving on -- it happened to
+the strongest claim in the previous version, which is exactly the kind
+of thing worth stating rather than burying.
+
+**Cross-model rank correlation, computed for the first time with all
+three models:** Qwen2.5-72B vs Qwen3-32B rho=0.20, Qwen3-32B vs gemma
+rho=0.20, Qwen2.5-72B vs gemma rho=-0.60 (Kendall tau=-0.33). None
+individually significant (n=4 components is very low power), but the
+negative correlation between Qwen2.5-72B and gemma is a real signal in
+the intended direction of this whole study -- two of three model pairs
+agree loosely, one disagrees outright. `tool_use x multi_critic`, the
+interaction that looked like the standout two-model cross-model finding
+(opposite significant signs on the two models measured), is not even
+significant on gemma (p=0.15) -- another case of a two-model story not
+surviving the third leg.
+
+**FDR correction redone across all 30 tests (10 per model x 3 models),
+same BH method as before.** 20 of 30 survive: 11 of 12 main effects
+(everything except gemma's multi_critic), 9 of 18 interactions.
+
+`findings.md` fully rewritten as the 3-of-3-model final result,
+replacing the 2-of-3 headstart version per its own stated instruction
+to do so once gemma finished. Two items remain explicitly open: the
+CoT-leak check was never run on gemma (only Qwen3-32B and Qwen2.5-72B
+were spot-checked), and nothing here has been checked against a fourth
+model or a second task suite.
